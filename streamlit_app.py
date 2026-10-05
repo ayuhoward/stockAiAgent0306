@@ -13,6 +13,12 @@ import streamlit as st
 from google import genai
 from google.genai import types
 
+# 讀取安全金鑰 (從 Streamlit Secrets 讀取，不寫死在程式碼中)
+GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+SUPABASE_URL = st.secrets["SUPABASE_DB_URL"]
+APP_PASSWORD = st.secrets["APP_PASSWORD"]
+AI_MODEL = "gemini-3.5-flash-lite"
+
 # ---------------------------------------------------------
 # 1. 網頁基本設定與資安防護 (密碼鎖)
 # ---------------------------------------------------------
@@ -33,10 +39,6 @@ if not st.session_state.authenticated:
             st.error("密碼錯誤，請重新輸入。")
     st.stop()  # 密碼錯誤前，停止載入後續所有程式碼
 
-# 讀取安全金鑰 (從 Streamlit Secrets 讀取，不寫死在程式碼中)
-GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-SUPABASE_URL = st.secrets["SUPABASE_DB_URL"]
-AI_MODEL = "gemini-3.5-flash-lite"
 
 # ---------------------------------------------------------
 # 2. Supabase 資料庫初始化與連線
@@ -88,7 +90,7 @@ def normalize_symbol(symbol: str) -> str:
     return clean_symbol
 
 # ==========================================
-# 更新 1：嚴格驗證的 record_trade 函式
+# 3. 嚴格驗證的 record_trade 函式
 # ==========================================
 def record_trade(symbol: str, action: str, shares: float = 0.0, price: float = 0.0, notes: str = "") -> dict:
     """紀錄交易 (買入或賣出股票)。必須嚴格包含代碼、股數與價格。"""
@@ -199,6 +201,8 @@ def get_portfolio_summary() -> dict:
 # ---------------------------------------------------------
 def fetch_stock_data(symbol: str) -> dict:
     """獲取台股或美股的日線、週線、技術指標 (RSI, MACD, 布林通道) 與支撐壓力位。"""
+    print(f"🛠️ [Tool Called] 呼叫 fetch_stock_data | 參數: symbol={symbol}")
+
     clean_symbol = normalize_symbol(symbol)
     try:
         ticker = yf.Ticker(clean_symbol)
@@ -259,6 +263,8 @@ def fetch_stock_data(symbol: str) -> dict:
 
 def fetch_chip_data(symbol: str) -> dict:
     """獲取台股的三大法人買賣超與千張大戶持股比例數據 (台股專用)。"""
+    print(f"🛠️ [Tool Called] 呼叫 fetch_chip_data | 參數: symbol={symbol}")
+
     clean_symbol = symbol.strip().upper().replace(".TW", "").replace(".TWO", "")
     if not clean_symbol.isdigit():
         return {"error": "籌碼數據僅支援台灣股市 (例如 2330, 0050)"}
@@ -293,6 +299,8 @@ def fetch_chip_data(symbol: str) -> dict:
 
 
 def fetch_stock_news(symbol: str) -> dict:
+    print(f"🛠️ [Tool Called] 呼叫 fetch_stock_news | 參數: symbol={symbol}")
+
     """抓取特定股票相關的最新 5 則焦點新聞。"""
     clean_symbol = symbol.strip().upper().replace(".TW", "").replace(".TWO", "")
     query = f"{clean_symbol} 股票"
@@ -308,6 +316,8 @@ def fetch_stock_news(symbol: str) -> dict:
 
 
 def scan_market_opportunities(market: str = "TW") -> dict:
+    print(f"🛠️ [Tool Called] 呼叫 scan_market_opportunities | 參數: market={market}")
+
     """自動掃描熱門選股池，根據技術面動能與均線多頭排列過濾出潛力標的。"""
     watch_list = ["2330.TW", "2454.TW", "2317.TW", "2382.TW", "3231.TW", "2308.TW", "2379.TW"] if market.upper() == "TW" else ["AAPL", "NVDA", "TSLA", "MSFT", "AMD", "GOOGL", "AMZN"]
     opportunities = []
@@ -337,6 +347,8 @@ def scan_market_opportunities(market: str = "TW") -> dict:
 
 
 def run_backtest(symbol: str, strategy: str = "sma_cross") -> dict:
+    print(f"🛠️ [Tool Called] 呼叫 run_backtest | 參數: symbol={symbol} | strategy={strategy}")
+
     """使用 vectorbt 執行歷史數據量化回測，計算勝率、獲利因子、最大回撤 (MDD) 與總報酬率。"""
     clean_symbol = normalize_symbol(symbol)
     try:
@@ -383,6 +395,8 @@ def run_backtest(symbol: str, strategy: str = "sma_cross") -> dict:
         return {"error": f"執行量化回測時發生錯誤: {str(e)}"}
 
 def generate_daily_portfolio_report() -> dict:
+    print(f"🛠️ [Tool Called] 呼叫 generate_daily_portfolio_report")
+
     """生成當前持股組合的完整日報，包含個股技術指標、投資組合風險集中度與弱點診斷。"""
     print(f"🛠️ [Tool Called] 呼叫 generate_daily_portfolio_report")
     
@@ -422,11 +436,42 @@ ALL_TOOLS = [
     run_backtest
 ]
 
+
+system_instruction = (
+    "你是一位資深的量化交易員與 AI 股市分析師。\n\n"
+    "【可用工具庫】\n"
+    "1. `fetch_stock_data`: 個股日/週線、均線、RSI、MACD、布林通道與近30日支撐壓力位。\n"
+    "2. `fetch_chip_data`: 台股三大法人買賣超與千張大戶持股比例。\n"
+    "3. `fetch_stock_news`: 即時新聞標題與發布時間。\n"
+    "4. `scan_market_opportunities`: 自動掃描選股池動能標的 (需求 1)。\n"
+    "5. `run_backtest`: 使用 vectorbt 回測歷史數據，取得真實勝率、獲利因子與最大回撤 MDD (需求 4)。\n\n"
+    "【專業分析規範】\n"
+    "1. **市場掃描與交易機會 (需求 1)**：\n"
+    "   * 當使用者要求「掃描市場」或「尋找交易機會」時，呼叫 `scan_market_opportunities`。\n"
+    "   * 挑出高勝率標的，**必須為每檔標的精確計算出**：\n"
+    "     - 🎯 建議進場價格區間\n"
+    "     - 🚀 出場目標價 (Target)\n"
+    "     - 🛡️ 停損價格 (Stop Loss)\n"
+    "     - ⚖️ 風險報酬比 (Risk/Reward Ratio，需至少 1:1.5 以上)\n"
+    "     - 💡 技術面與動能成立理由。\n"
+    "2. **策略量化回測分析 (需求 4)**：\n"
+    "   * 當使用者要求「驗證策略」、「回測」時，**務必呼叫 `run_backtest` 工具獲取精確數據**，嚴禁憑空猜測數字！\n"
+    "   * 根據工具回傳的真實數字（勝率、獲利因子 Profit Factor、最大回撤 MDD），分析該策略優缺點，並提出 2~3 條具體的改進建議（如加入停損機制、濾網或動能指標）。\n\n"
+    "【極重要工具使用規則】\n"
+    "1. 當使用者要求『歷史回測』或『策略驗證』時，你【只能且必須只呼叫 `run_backtest`】！嚴禁同時呼叫其他任何工具 (如 fetch_stock_data 或 news)。\n"
+    "2. 當使用者要求『市場掃描』時，你【只能且必須只呼叫 `scan_market_opportunities`】！\n"
+    "3. 當使用者查詢『單一個股行情』時，才呼叫 `fetch_stock_data` 或 `fetch_chip_data`。\n\n"
+    "【分析要求】\n"
+    "• 執行 `run_backtest` 後，請根據回傳的勝率 (win_rate_pct)、獲利因子 (profit_factor) 與最大回撤 (max_drawdown_mdd_pct)，精確點出該策略優缺點，並給出 2~3 條具體改進建議。\n"
+    "• 全程使用繁體中文，採用專業 Markdown 格式。"
+    "請全程使用繁體中文回覆，採用簡潔專業的 Markdown 標題與表格呈現數據。"
+)
+
+
 # ---------------------------------------------------------
 # 5. Gemini AI 與 Streamlit Chat 介面
 # ---------------------------------------------------------
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
-system_instruction = "你是一位資深的量化交易員與 AI 個人資產管理顧問。請全程使用繁體中文，並以 Markdown 格式回覆。"
 
 st.title("🤖 AI 量化股市助手 (Streamlit 版)")
 
@@ -470,7 +515,7 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
 
 # --- 處理使用者輸入 ---
-if prompt := st.chat_input("請輸入指令 (例如: 幫我記錄買入 2330 1000股)"):
+if prompt := st.chat_input("請輸入指令 (例如: 幫我記錄買入 2330 1000股 2000元)"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
