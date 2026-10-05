@@ -1,0 +1,9 @@
+requests
+feedparser
+yfinance
+pandas
+pandas-ta
+vectorbt
+psycopg2-binary
+streamlit
+google-genai
