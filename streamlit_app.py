@@ -35,7 +35,7 @@ if not st.session_state.authenticated:
 
 # 讀取安全金鑰 (從 Streamlit Secrets 讀取，不寫死在程式碼中)
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-SUPABASE_URL = st.secrets["SUPABASE_DB_URL"]
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
 AI_MODEL = "gemini-3.5-flash-lite"
 
 # ---------------------------------------------------------
@@ -381,6 +381,32 @@ def run_backtest(symbol: str, strategy: str = "sma_cross") -> dict:
         }
     except Exception as e:
         return {"error": f"執行量化回測時發生錯誤: {str(e)}"}
+
+def generate_daily_portfolio_report() -> dict:
+    """生成當前持股組合的完整日報，包含個股技術指標、投資組合風險集中度與弱點診斷。"""
+    print(f"🛠️ [Tool Called] 呼叫 generate_daily_portfolio_report")
+    
+    # 1. 取得當前持股
+    port_data = get_portfolio_summary()
+    if "portfolio" not in port_data or not port_data["portfolio"]:
+        return {"error": "目前無持股，無法產生持股日報。"}
+        
+    report_details = []
+    
+    # 2. 針對每一檔持股，抓取最新的技術面狀態
+    for item in port_data["portfolio"]:
+        sym = item["symbol"]
+        tech_data = fetch_stock_data(sym)
+        report_details.append({
+            "position": item,
+            "technical": tech_data
+        })
+        
+    # 3. 回傳綜合報告給 AI 分析
+    return {
+        "overall_summary": port_data["summary"],
+        "holding_details": report_details
+    }
 
 # ==========================================
 # 更新 2：包含所有工具與記憶機制的 UI 介面
