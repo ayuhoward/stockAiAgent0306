@@ -7,3 +7,4 @@ vectorbt
 psycopg2-binary
 streamlit
 google-genai
+plotly<6.0.0
