@@ -87,24 +87,23 @@ def normalize_symbol(symbol: str) -> str:
         clean_symbol += ".TW"
     return clean_symbol
 
-# ---------------------------------------------------------
-# 3. 資料庫操作 Tools (替換為 PostgreSQL 語法 %s)
-# ---------------------------------------------------------
-def record_trade(symbol: str, action: str, shares: float, price: float = None, notes: str = "") -> dict:
+# ==========================================
+# 更新 1：嚴格驗證的 record_trade 函式
+# ==========================================
+def record_trade(symbol: str, action: str, shares: float = 0.0, price: float = 0.0, notes: str = "") -> dict:
+    """紀錄交易 (買入或賣出股票)。必須嚴格包含代碼、股數與價格。"""
+    
+    # 嚴格防呆檢查：如果沒有股數、沒有價格，或數值不合理，直接退回命令！
+    if not symbol or shares <= 0 or price <= 0:
+        return {
+            "error": "❌ 拒絕執行：您遺漏了重要資訊！請明確告訴我「哪一檔股票」、「買/賣幾股」以及「成交價錢是多少」。請在了解所有資訊後再呼叫此工具。"
+        }
+
     clean_symbol = normalize_symbol(symbol)
     action = action.upper()
     
     if action not in ['BUY', 'SELL']:
         return {"error": "交易動作必須為 BUY 或 SELL"}
-        
-    if price is None or price <= 0:
-        try:
-            ticker = yf.Ticker(clean_symbol)
-            hist = ticker.history(period="1d")
-            if hist.empty: return {"error": f"無法自動取得價格。"}
-            price = round(float(hist['Close'].iloc[-1]), 2)
-        except Exception as e:
-            return {"error": str(e)}
 
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_db_connection()
@@ -148,7 +147,7 @@ def record_trade(symbol: str, action: str, shares: float, price: float = None, n
                 )
                 
         conn.commit()
-        return {"status": "success", "message": f"成功紀錄 {action} {clean_symbol} {shares} 股"}
+        return {"status": "success", "message": f"成功紀錄 {action} {clean_symbol} {shares} 股，成交價 {price} 元。"}
     except Exception as e:
         return {"error": str(e)}
     finally:
@@ -383,6 +382,20 @@ def run_backtest(symbol: str, strategy: str = "sma_cross") -> dict:
     except Exception as e:
         return {"error": f"執行量化回測時發生錯誤: {str(e)}"}
 
+# ==========================================
+# 更新 2：包含所有工具與記憶機制的 UI 介面
+# ==========================================
+ALL_TOOLS = [
+    record_trade, 
+    get_portfolio_summary, 
+    generate_daily_portfolio_report,
+    fetch_stock_data, 
+    fetch_chip_data, 
+    fetch_stock_news, 
+    scan_market_opportunities, 
+    run_backtest
+]
+
 # ---------------------------------------------------------
 # 5. Gemini AI 與 Streamlit Chat 介面
 # ---------------------------------------------------------
@@ -391,43 +404,61 @@ system_instruction = "你是一位資深的量化交易員與 AI 個人資產管
 
 st.title("🤖 AI 量化股市助手 (Streamlit 版)")
 
+# --- 側邊欄：清除記憶按鈕 ---
+with st.sidebar:
+    st.write("⚙️ 系統設定")
+    if st.button("🗑️ 清除對話歷史"):
+        # 清除 UI 上的文字紀錄
+        st.session_state.messages = [
+            {"role": "assistant", "content": "👋 對話與記憶已清除！請問今天要查詢持股、回測策略，還是記錄交易呢？"}
+        ]
+        # 強制重新建立一個乾淨的 Chat Session
+        if "chat_session" in st.session_state:
+            del st.session_state.chat_session
+        st.rerun()
+
+
 # 初始化對話紀錄
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {"role": "assistant", "content": "👋 你好！我是你的量化 AI 助手，已連接至 Supabase 雲端資料庫。請問今天要查詢持股、回測策略，還是記錄交易呢？"}
     ]
 
-# 顯示對話歷史
+if "chat_session" not in st.session_state:
+    # 將 Session 存入 session_state，讓它不會每次重整就被洗掉
+    st.session_state.chat_session = ai_client.chats.create(
+        model=AI_MODEL,
+        config=types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            tools=ALL_TOOLS,  # 補全所有工具
+            temperature=0.2,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                maximum_remote_calls=5
+            )
+        )
+    )
+
+# --- 顯示歷史對話 ---
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 處理使用者輸入
+# --- 處理使用者輸入 ---
 if prompt := st.chat_input("請輸入指令 (例如: 幫我記錄買入 2330 1000股)"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("🤔 AI 正在存取雲端資料庫與分析數據..."):
+        with st.spinner("🤔 AI 正在分析與存取資料庫..."):
             try:
-                # 採用拋棄式 Session 以節省 Token
-                local_chat_session = ai_client.chats.create(
-                    model=AI_MODEL,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        # 記得將您所有的函式放入 tools 列表中
-                        tools=[record_trade, get_portfolio_summary], 
-                        temperature=0.2,
-                        automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                            maximum_remote_calls=5
-                        )
-                    )
-                )
-                response = local_chat_session.send_message(prompt)
+                # 這裡直接呼叫保存在 session_state 中的 chat_session
+                response = st.session_state.chat_session.send_message(prompt)
+                
                 final_text = response.text if response.text else "❌ AI 執行完畢，但未產出文字總結。"
                 st.markdown(final_text)
                 st.session_state.messages.append({"role": "assistant", "content": final_text})
+                
             except Exception as e:
                 error_msg = f"❌ 處理時發生錯誤：{str(e)}"
                 st.error(error_msg)
