@@ -35,7 +35,7 @@ if not st.session_state.authenticated:
 
 # 讀取安全金鑰 (從 Streamlit Secrets 讀取，不寫死在程式碼中)
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_URL = st.secrets["SUPABASE_DB_URL"]
 AI_MODEL = "gemini-3.5-flash-lite"
 
 # ---------------------------------------------------------
