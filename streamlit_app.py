@@ -151,21 +151,24 @@ def update_global_memory(new_summary: str):
 # ---------------------------------------------------------
 # 畫視覺畫圖形 Tool
 # ---------------------------------------------------------
-def show_stock_chart(symbol: str) -> dict:
+def show_stock_chart(symbol: str, period: str = "6mo") -> dict:
     """
-    當使用者要求「畫出 K 線圖」、「看走勢圖」時呼叫此工具。
-    這個工具會通知網頁前端渲染真正的互動式 K 線圖。
+    當使用者要求畫 K 線圖、走勢圖時呼叫此工具。
+    Args:
+        symbol: 股票代碼 (例如 '2330', 'AAPL')
+        period: 資料長度。有效值必須為: '1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max'。預設為 '6mo'。
     """
     clean_symbol = normalize_symbol(symbol)
     
-    # 將要畫圖的股票代碼存入 Streamlit 的 session_state
+    # 把代碼和「時間長度」一起存進網頁暫存記憶體
     st.session_state.render_chart_for = clean_symbol
+    st.session_state.render_chart_period = period 
     
-    print(f"🛠️ [Tool Called] 呼叫 show_stock_chart | 準備在畫面上渲染: {clean_symbol}")
+    print(f"🛠️ [Tool Called] 呼叫 show_stock_chart | 渲染: {clean_symbol}, 期間: {period}")
     
     return {
         "status": "success", 
-        "message": f"已成功觸發網頁前端繪製 {clean_symbol} 的 K 線圖，請告訴使用者查看畫面下方的圖表。"
+        "message": f"已成功觸發網頁前端繪製 {clean_symbol} 的 {period} K 線圖。"
     }
 
 # ---------------------------------------------------------
@@ -628,16 +631,17 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
 # 檢查 AI 是否有觸發畫圖指令
 if "render_chart_for" in st.session_state and st.session_state.render_chart_for:
     chart_symbol = st.session_state.render_chart_for
+    # 讀取 AI 決定的時間長度，如果沒給就預設 6mo
+    chart_period = st.session_state.get("render_chart_period", "6mo") 
     
-    st.markdown("---") # 畫一條分隔線
-    st.subheader(f"📊 {chart_symbol} 近半年 K 線圖")
+    st.markdown("---") 
+    st.subheader(f"📊 {chart_symbol} K 線圖 (期間: {chart_period})")
     
     try:
-        # 使用 yfinance 抓取近 6 個月的資料
-        df = yf.download(chart_symbol, period="6mo", progress=False)
+        # 這裡把寫死的 "6mo" 換成動態變數 chart_period
+        df = yf.download(chart_symbol, period=chart_period, progress=False)
         
         if not df.empty:
-            # 使用 Plotly 繪製專業的蠟燭圖 (K線圖)
             fig = go.Figure(data=[go.Candlestick(
                 x=df.index,
                 open=df['Open'].squeeze(),
@@ -647,21 +651,19 @@ if "render_chart_for" in st.session_state and st.session_state.render_chart_for:
                 name=chart_symbol
             )])
             
-            # 美化圖表外觀
             fig.update_layout(
-                xaxis_rangeslider_visible=False, # 隱藏底部的滑桿讓畫面更簡潔
-                template="plotly_dark",          # 暗黑主題 (若您的網頁是亮色可改 "plotly_white")
+                xaxis_rangeslider_visible=False, 
+                template="plotly_dark",          
                 margin=dict(l=20, r=20, t=20, b=20),
                 height=500
             )
-            
-            # 將圖表顯示在 Streamlit 網頁上
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.warning(f"無法獲取 {chart_symbol} 的歷史資料來繪製圖表。")
+            st.warning(f"無法獲取 {chart_symbol} 在 {chart_period} 期間的歷史資料。")
             
     except Exception as e:
         st.error(f"繪製圖表時發生錯誤：{str(e)}")
         
-    # 畫完圖後，清除暫存，避免每次對話都重複畫同一張圖
+    # 畫完圖後清除暫存
     st.session_state.render_chart_for = None
+    st.session_state.render_chart_period = None
