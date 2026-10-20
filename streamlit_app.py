@@ -464,10 +464,10 @@ with st.sidebar:
         
     st.divider()
     past_sessions = get_all_sessions()
-    for s in past_sessions:
+    for idx, s in enumerate(past_sessions):
         col1, col2 = st.columns([4, 1])
         with col1:
-            if st.button(f"📄 {s['title']}", key=f"load_{s['session_id']}", use_container_width=True):
+            if st.button(f"📄 {s['title']}", key=f"load_{s['session_id']}_{idx}", use_container_width=True):
                 st.session_state.current_session_id = s['session_id']
                 st.session_state.messages = load_chat_history(s['session_id'])
                 st.rerun()
