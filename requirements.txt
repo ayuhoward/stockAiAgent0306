@@ -9,3 +9,4 @@ streamlit
 google-genai
 plotly<6.0.0
 supabase
+plotly
