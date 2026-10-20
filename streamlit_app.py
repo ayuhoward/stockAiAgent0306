@@ -538,7 +538,7 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                     history=gemini_history,
                     config=types.GenerateContentConfig(
                         system_instruction=dynamic_system_prompt,
-                        tools=[record_trade, get_portfolio_summary, fetch_stock_data, fetch_chip_data, fetch_stock_news, scan_market_opportunities, run_backtest]
+                        tools=[record_trade, get_portfolio_summary, fetch_stock_data, fetch_chip_data, fetch_stock_news, scan_market_opportunities, run_backtest],
                         temperature=0.2,
                         automatic_function_calling=types.AutomaticFunctionCallingConfig(maximum_remote_calls=5)
                     )
