@@ -211,25 +211,65 @@ def get_portfolio_summary() -> dict:
     return {"summary": {"total_cost": round(total_cost, 2), "total_unrealized_pnl": round(total_market_val - total_cost, 2)}, "portfolio": portfolio}
 
 def fetch_stock_data(symbol: str) -> dict:
+    """獲取台股或美股的日線、週線、技術指標 (RSI, MACD, 布林通道) 與支撐壓力位。"""
     clean_symbol = normalize_symbol(symbol)
     try:
         ticker = yf.Ticker(clean_symbol)
         hist_daily = ticker.history(period="1y")
-        if hist_daily.empty: return {"error": f"找不到股票代碼 {symbol} 的數據。"}
+        
+        if hist_daily.empty and clean_symbol.endswith(".TW"):
+            clean_symbol = clean_symbol.replace(".TW", ".TWO")
+            ticker = yf.Ticker(clean_symbol)
+            hist_daily = ticker.history(period="1y")
+            
+        if hist_daily.empty:
+            return {"error": f"找不到股票代碼 {symbol} 的相關數據。"}
+
+        hist_weekly = ticker.history(period="2y", interval="1wk")
+
+        # 計算技術指標
         hist_daily.ta.sma(length=5, append=True)
         hist_daily.ta.sma(length=20, append=True)
+        hist_daily.ta.sma(length=60, append=True)
         hist_daily.ta.rsi(length=14, append=True)
+
         latest_d = hist_daily.iloc[-1]
+        prev_d = hist_daily.iloc[-2] if len(hist_daily) > 1 else latest_d
+        recent_30d = hist_daily.tail(30)
+
+        # 計算漲跌幅
+        change_pct = ((latest_d['Close'] - prev_d['Close']) / prev_d['Close']) * 100
+
+        # 計算週線趨勢
+        weekly_trend = "N/A"
+        if not hist_weekly.empty and len(hist_weekly) >= 20:
+            hist_weekly.ta.sma(length=20, append=True)
+            latest_w = hist_weekly.iloc[-1]
+            if 'SMA_20' in latest_w and not pd.isna(latest_w['SMA_20']):
+                weekly_trend = "多頭趨勢 (站上20週均線)" if latest_w['Close'] > latest_w['SMA_20'] else "整理/空頭趨勢"
+
         return {
             "symbol": clean_symbol,
+            "date": str(hist_daily.index[-1].strftime('%Y-%m-%d')),
             "close_price": round(float(latest_d['Close']), 2),
-            "sma5": round(float(latest_d.get('SMA_5', 0)), 2),
-            "sma20": round(float(latest_d.get('SMA_20', 0)), 2),
-            "rsi_14": round(float(latest_d.get('RSI_14', 0)), 2)
+            "change_percent": f"{round(float(change_pct), 2)}%",
+            "moving_averages": {
+                "sma5": round(float(latest_d.get('SMA_5', 0)), 2) if not pd.isna(latest_d.get('SMA_5')) else "N/A",
+                "sma20": round(float(latest_d.get('SMA_20', 0)), 2) if not pd.isna(latest_d.get('SMA_20')) else "N/A",
+                "sma60": round(float(latest_d.get('SMA_60', 0)), 2) if not pd.isna(latest_d.get('SMA_60')) else "N/A",
+            },
+            "momentum_indicators": {
+                "rsi_14": round(float(latest_d.get('RSI_14', 0)), 2) if not pd.isna(latest_d.get('RSI_14')) else "N/A",
+            },
+            "support_resistance": {
+                "resistance_30d": round(float(recent_30d['High'].max()), 2),
+                "support_30d": round(float(recent_30d['Low'].min()), 2)
+            },
+            "weekly_trend": weekly_trend
         }
     except Exception as e:
-        return {"error": str(e)}
-
+        return {"error": f"抓取技術面數據時發生錯誤: {str(e)}"}
+        
 def scan_market_opportunities(market: str = "TW") -> dict:
     watch_list = ["2303.TW", "2481.TW", "3264.TW", "3533.TW"] if market.upper() == "TW" else ["AAPL", "NVDA", "TSLA"]
     opportunities = []
@@ -365,21 +405,44 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
 
                 overflow_buffer = []
                 while True:
+                    # ==========================================
+                    # 1. 修正：移除耗時的 while 迴圈，改採固定輪數截斷與單次計算
+                    # ==========================================
+                    MAX_HISTORY_MESSAGES = 10 # 限制最多保留最近 10 筆訊息 (5個問答回合)
+                    history_messages = st.session_state.messages[:-1]
+                    overflow_buffer = []
+    
+                    if len(history_messages) > MAX_HISTORY_MESSAGES:
+                        # 抓出溢出準備被丟棄的對話
+                        overflow_buffer = history_messages[:-MAX_HISTORY_MESSAGES]
+                        # 只保留最近的對話
+                        history_messages = history_messages[-MAX_HISTORY_MESSAGES:]
+    
+                    # 確保結構完整，由 User 開頭
+                    if history_messages and history_messages[0]["role"] == "assistant":
+                        if len(history_messages) > 1:
+                            overflow_buffer.append(history_messages[0])
+                        history_messages = history_messages[1:]
+    
+                    # 若有剔除的對話，執行背景摘要並更新全域記憶
+                    if overflow_buffer:
+                        curr_global_mem = load_global_memory()
+                        new_global_mem = summarize_overflow(overflow_buffer, curr_global_mem)
+                        update_global_memory(new_global_mem)
+                        st.toast("🧠 AI 已將舊對話轉為全域記憶保存", icon="💡")
+    
                     gemini_history = build_gemini_history(history_messages)
-                    full_contents = gemini_history + message_contents
                     
-                    if not history_messages: break # 歷史已清空，直接跳出
+                    # 只發送一次網路請求來計算當前花費的 Token
+                    try:
+                        token_info = ai_client.models.count_tokens(
+                            model=AI_MODEL, 
+                            contents=gemini_history + message_contents
+                        )
+                        st.caption(f"📊 本次請求預估消耗 Token: {token_info.total_tokens}")
+                    except:
+                        pass # 忽略計算錯誤，不影響主程式運行
                     
-                    # 使用 API 試算 Token
-                    token_info = ai_client.models.count_tokens(model=AI_MODEL, contents=full_contents)
-                    if token_info.total_tokens <= MAX_TOKENS_LIMIT:
-                        st.caption(f"📊 即時 Token 估算: {token_info.total_tokens} / {MAX_TOKENS_LIMIT}")
-                        break
-                        
-                    # 超標，剃除最舊的一組對話 (一問一答) 進入溢出緩衝區
-                    overflow_buffer.extend(history_messages[:2])
-                    history_messages = history_messages[2:]
-
                 # 若有剔除的對話，執行背景摘要並更新全域記憶
                 if overflow_buffer:
                     curr_global_mem = load_global_memory()
