@@ -7,11 +7,12 @@ import feedparser
 import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
-import vectorbt as vbt
+import plotly.graph_objects as go
 import psycopg2
 import streamlit as st
 import tempfile
 import uuid
+import vectorbt as vbt
 from google import genai
 from google.genai import types
 
@@ -148,7 +149,27 @@ def update_global_memory(new_summary: str):
     conn.close()
 
 # ---------------------------------------------------------
-# 4. 財務與量化 Tools (與你原本邏輯相同)
+# 畫視覺畫圖形 chart
+# ---------------------------------------------------------
+def show_stock_chart(symbol: str) -> dict:
+    """
+    當使用者要求「畫出 K 線圖」、「看走勢圖」時呼叫此工具。
+    這個工具會通知網頁前端渲染真正的互動式 K 線圖。
+    """
+    clean_symbol = normalize_symbol(symbol)
+    
+    # 將要畫圖的股票代碼存入 Streamlit 的 session_state
+    st.session_state.render_chart_for = clean_symbol
+    
+    print(f"🛠️ [Tool Called] 呼叫 show_stock_chart | 準備在畫面上渲染: {clean_symbol}")
+    
+    return {
+        "status": "success", 
+        "message": f"已成功觸發網頁前端繪製 {clean_symbol} 的 K 線圖，請告訴使用者查看畫面下方的圖表。"
+    }
+
+# ---------------------------------------------------------
+# 4. 財務與量化 Tools
 # ---------------------------------------------------------
 def record_trade(symbol: str, action: str, shares: float, price: float, notes: str = "") -> dict:
     # 移除自動市價，強制要求價格，避免 AI 產生幻覺重覆買進
@@ -562,3 +583,44 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                         ai_client.files.delete(name=gemini_file.name)
                     except: 
                         pass
+
+# 檢查 AI 是否有觸發畫圖指令
+if "render_chart_for" in st.session_state and st.session_state.render_chart_for:
+    chart_symbol = st.session_state.render_chart_for
+    
+    st.markdown("---") # 畫一條分隔線
+    st.subheader(f"📊 {chart_symbol} 近半年 K 線圖")
+    
+    try:
+        # 使用 yfinance 抓取近 6 個月的資料
+        df = yf.download(chart_symbol, period="6mo", progress=False)
+        
+        if not df.empty:
+            # 使用 Plotly 繪製專業的蠟燭圖 (K線圖)
+            fig = go.Figure(data=[go.Candlestick(
+                x=df.index,
+                open=df['Open'].squeeze(),
+                high=df['High'].squeeze(),
+                low=df['Low'].squeeze(),
+                close=df['Close'].squeeze(),
+                name=chart_symbol
+            )])
+            
+            # 美化圖表外觀
+            fig.update_layout(
+                xaxis_rangeslider_visible=False, # 隱藏底部的滑桿讓畫面更簡潔
+                template="plotly_dark",          # 暗黑主題 (若您的網頁是亮色可改 "plotly_white")
+                margin=dict(l=20, r=20, t=20, b=20),
+                height=500
+            )
+            
+            # 將圖表顯示在 Streamlit 網頁上
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning(f"無法獲取 {chart_symbol} 的歷史資料來繪製圖表。")
+            
+    except Exception as e:
+        st.error(f"繪製圖表時發生錯誤：{str(e)}")
+        
+    # 畫完圖後，清除暫存，避免每次對話都重複畫同一張圖
+    st.session_state.render_chart_for = None
