@@ -270,32 +270,129 @@ def fetch_stock_data(symbol: str) -> dict:
     except Exception as e:
         return {"error": f"抓取技術面數據時發生錯誤: {str(e)}"}
         
+def fetch_chip_data(symbol: str) -> dict:
+    """獲取台股的三大法人買賣超數據。"""
+    clean_symbol = symbol.strip().upper().replace(".TW", "").replace(".TWO", "")
+    if not clean_symbol.isdigit():
+        return {"error": "籌碼數據僅支援台灣股市 (例如 2330, 0050)"}
+
+    today = datetime.date.today()
+    start_date = (today - datetime.timedelta(days=10)).strftime("%Y-%m-%d")
+    url = "https://api.finmindtrade.com/api/v4/data"
+    result = {"symbol": clean_symbol, "institutional": {}, "major_holders": {}}
+
+    try:
+        params_inst = {"dataset": "TaiwanStockInstitutionalInvestorsBuySell", "data_id": clean_symbol, "start_date": start_date}
+        res_inst = requests.get(url, params=params_inst, timeout=5).json()
+
+        if res_inst.get("data"):
+            latest_date = res_inst["data"][-1]["date"]
+            day_data = [d for d in res_inst["data"] if d["date"] == latest_date]
+            summary = {}
+            for item in day_data:
+                name = item["name"]
+                net_buy = (item["buy"] - item["sell"]) // 1000
+                summary[name] = summary.get(name, 0) + net_buy
+
+            result["institutional"] = {
+                "date": latest_date,
+                "foreign_buy_share": summary.get("Foreign_Investor", 0),
+                "trust_buy_share": summary.get("Investment_Trust", 0),
+                "dealer_buy_share": summary.get("Dealer_Self", 0) + summary.get("Dealer_Hedging", 0)
+            }
+        return result
+    except Exception as e:
+        return {"error": f"抓取籌碼數據時發生錯誤: {str(e)}"}
+
+
+def fetch_stock_news(symbol: str) -> dict:
+    """抓取特定股票相關的最新 5 則焦點新聞。"""
+    clean_symbol = symbol.strip().upper().replace(".TW", "").replace(".TWO", "")
+    query = f"{clean_symbol} 股票"
+    encoded_query = urllib.parse.quote(query)
+    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+
+    try:
+        feed = feedparser.parse(rss_url)
+        news_items = [{"title": e.title, "published": getattr(e, 'published', 'N/A')} for e in feed.entries[:5]]
+        return {"symbol": clean_symbol, "news": news_items}
+    except Exception as e:
+        return {"error": f"抓取新聞時發生錯誤: {str(e)}"}
+
+
 def scan_market_opportunities(market: str = "TW") -> dict:
-    watch_list = ["2303.TW", "2481.TW", "3264.TW", "3533.TW"] if market.upper() == "TW" else ["AAPL", "NVDA", "TSLA"]
+    """自動掃描熱門選股池，根據技術面動能與均線多頭排列過濾出潛力標的。"""
+    watch_list = ["2303.TW", "2481.TW", "3264.TW", "3533.TW", "2330.TW", "2454.TW", "2317.TW"] if market.upper() == "TW" else ["AAPL", "NVDA", "TSLA", "MSFT", "AMD", "GOOGL", "AMZN"]
     opportunities = []
+
     for symbol in watch_list:
         try:
             df = yf.download(symbol, period="6mo", progress=False)
             if df.empty or len(df) < 30: continue
             close = df["Close"].squeeze()
-            sma5, sma20 = ta.sma(close, length=5).iloc[-1], ta.sma(close, length=20).iloc[-1]
-            if float(close.iloc[-1]) > sma20 and sma5 > sma20:
-                opportunities.append({"symbol": symbol, "price": round(float(close.iloc[-1]), 2)})
-        except: continue
-    return {"market": market, "candidates": opportunities}
+            sma5 = ta.sma(close, length=5).iloc[-1]
+            sma20 = ta.sma(close, length=20).iloc[-1]
+            rsi14 = ta.rsi(close, length=14).iloc[-1]
+
+            curr_price = float(close.iloc[-1])
+            if curr_price > sma20 and sma5 > sma20 and 48 <= rsi14 <= 75:
+                opportunities.append({
+                    "symbol": symbol,
+                    "current_price": round(curr_price, 2),
+                    "sma5": round(float(sma5), 2),
+                    "sma20": round(float(sma20), 2),
+                    "rsi14": round(float(rsi14), 2)
+                })
+        except Exception:
+            continue
+
+    return {"market": market, "matched_count": len(opportunities), "candidates": opportunities[:5]}
 
 def run_backtest(symbol: str, strategy: str = "sma_cross") -> dict:
+    """使用 vectorbt 執行歷史數據量化回測，計算勝率、獲利因子、最大回撤 (MDD) 與總報酬率。"""
     clean_symbol = normalize_symbol(symbol)
     try:
         df = yf.download(clean_symbol, period="2y", progress=False)
-        if df.empty: return {"error": "無資料"}
+        if df.empty or "Close" not in df:
+            return {"error": f"找不到 {clean_symbol} 的歷史價格資料。"}
+
         price = df["Close"].squeeze()
-        fast_ma, slow_ma = ta.sma(price, length=5), ta.sma(price, length=20)
-        entries = (fast_ma > slow_ma) & (fast_ma.shift(1) <= slow_ma.shift(1))
-        exits = (fast_ma < slow_ma) & (fast_ma.shift(1) >= slow_ma.shift(1))
-        portfolio = vbt.Portfolio.from_signals(price, entries, exits, init_cash=100000)
-        return {"symbol": clean_symbol, "win_rate_pct": f"{round(float(portfolio.trades.win_rate())*100,2)}%", "total_return_pct": f"{round(float(portfolio.total_return())*100,2)}%"}
-    except Exception as e: return {"error": str(e)}
+        if strategy == "rsi_signal":
+            rsi = ta.rsi(price, length=14)
+            entries, exits = rsi < 30, rsi > 70
+        else:
+            fast_ma = ta.sma(price, length=5)
+            slow_ma = ta.sma(price, length=20)
+            entries = (fast_ma > slow_ma) & (fast_ma.shift(1) <= slow_ma.shift(1))
+            exits = (fast_ma < slow_ma) & (fast_ma.shift(1) >= slow_ma.shift(1))
+
+        portfolio = vbt.Portfolio.from_signals(price, entries, exits, init_cash=100000, fees=0.001425)
+
+        def safe_float(val, multiplier=1.0, default=0.0):
+            try:
+                raw_val = float(val.iloc[0]) if isinstance(val, pd.Series) else float(val)
+                final_val = raw_val * multiplier
+                return default if (math.isnan(final_val) or math.isinf(final_val)) else round(final_val, 2)
+            except Exception:
+                return default
+
+        total_trades = int(portfolio.trades.count())
+        win_rate = safe_float(portfolio.trades.win_rate(), multiplier=100.0) if total_trades > 0 else 0.0
+        profit_factor = safe_float(portfolio.profit_factor()) if total_trades > 0 else 0.0
+        max_dd = safe_float(portfolio.max_drawdown(), multiplier=100.0)
+        total_return = safe_float(portfolio.total_return(), multiplier=100.0)
+
+        return {
+            "symbol": clean_symbol,
+            "strategy": strategy,
+            "total_trades": total_trades,
+            "win_rate_pct": f"{win_rate}%",
+            "profit_factor": profit_factor,
+            "max_drawdown_mdd_pct": f"{max_dd}%",
+            "total_return_pct": f"{total_return}%"
+        }
+    except Exception as e:
+        return {"error": f"執行量化回測時發生錯誤: {str(e)}"}
 
 # ---------------------------------------------------------
 # 5. Gemini 格式轉換與自動摘要工具
@@ -441,7 +538,7 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                     history=gemini_history,
                     config=types.GenerateContentConfig(
                         system_instruction=dynamic_system_prompt,
-                        tools=[record_trade, get_portfolio_summary, fetch_stock_data, scan_market_opportunities, run_backtest],
+                        tools=[record_trade, get_portfolio_summary, fetch_stock_data, fetch_chip_data, fetch_stock_news, scan_market_opportunities, run_backtest]
                         temperature=0.2,
                         automatic_function_calling=types.AutomaticFunctionCallingConfig(maximum_remote_calls=5)
                     )
