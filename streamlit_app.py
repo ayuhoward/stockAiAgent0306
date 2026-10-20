@@ -35,7 +35,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_URL = st.secrets["SUPABASE_DB_URL"]
 AI_MODEL = "gemini-3.5-flash-lite"
 MAX_TOKENS_LIMIT = 4000  # Token 安全上限設定
 
