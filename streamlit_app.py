@@ -149,7 +149,7 @@ def update_global_memory(new_summary: str):
     conn.close()
 
 # ---------------------------------------------------------
-# 畫視覺畫圖形 chart
+# 畫視覺畫圖形 Tool
 # ---------------------------------------------------------
 def show_stock_chart(symbol: str) -> dict:
     """
@@ -448,7 +448,20 @@ def summarize_overflow(overflow_msgs: list, current_summary: str) -> str:
 # ---------------------------------------------------------
 # 6. Streamlit 介面與主程式邏輯
 # ---------------------------------------------------------
-st.title("🤖 AI 量化股市助手 (全域記憶版)")
+# 1. 獨立定義載入對話的 Callback 邏輯
+def handle_load_session(session_id):
+    st.session_state.current_session_id = session_id
+    st.session_state.messages = load_chat_history(session_id)
+
+# 2. 獨立定義刪除對話的 Callback 邏輯
+def handle_delete_session(session_id):
+    delete_session(session_id) # 執行資料庫刪除
+    # 如果刪除的剛好是目前正在看的對話，就重置畫面
+    if st.session_state.current_session_id == session_id:
+        st.session_state.current_session_id = str(uuid.uuid4())
+        st.session_state.messages = [{"role": "assistant", "content": "👋 紀錄已清除。"}]
+        
+st.title("🤖 AI 量化股市助手 (V2.0.2)")
 
 if "current_session_id" not in st.session_state:
     st.session_state.current_session_id = str(uuid.uuid4())
@@ -464,20 +477,25 @@ with st.sidebar:
         
     st.divider()
     past_sessions = get_all_sessions()
-    for idx, s in enumerate(past_sessions):
+    for s in past_sessions:
         col1, col2 = st.columns([4, 1])
         with col1:
-            if st.button(f"📄 {s['title']}", key=f"load_{s['session_id']}_{idx}", use_container_width=True):
-                st.session_state.current_session_id = s['session_id']
-                st.session_state.messages = load_chat_history(s['session_id'])
-                st.rerun()
+            # 使用 on_click 觸發函式，並透過 args 傳入參數
+            st.button(
+                f"📄 {s['title']}", 
+                key=f"load_{s['session_id']}", 
+                use_container_width=True,
+                on_click=handle_load_session,
+                args=(s['session_id'],)
+            )
+            
         with col2:
-            if st.button("🗑️", key=f"del_{s['session_id']}"):
-                delete_session(s['session_id'])
-                if st.session_state.current_session_id == s['session_id']:
-                    st.session_state.current_session_id = str(uuid.uuid4())
-                    st.session_state.messages = [{"role": "assistant", "content": "👋 紀錄已清除。"}]
-                st.rerun()
+            st.button(
+                "🗑️", 
+                key=f"del_{s['session_id']}",
+                on_click=handle_delete_session,
+                args=(s['session_id'],)
+            )
                 
     st.divider()
     st.header("📎 附加檔案分析")
