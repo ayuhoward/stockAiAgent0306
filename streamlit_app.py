@@ -379,9 +379,9 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
     with st.chat_message("user"): st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("🤔 正在精算 Token 與檢索全域記憶..."):
+        with st.spinner("🤔 正在檢索數據與思考中..."):
             try:
-                # 準備發送的當前內容與檔案
+                # 1. 準備發送的當前內容與檔案
                 message_contents = [prompt]
                 gemini_file = None
                 tmp_path = None
@@ -393,72 +393,52 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                         tmp_path = tmp.name
                     gemini_file = ai_client.files.upload(file=tmp_path, config={'display_name': uploaded_file.name})
                     message_contents.append(gemini_file)
-
+    
                 # ==========================================
-                # 動態 Token 截斷與背景摘要機制
+                # 2. 固定輪數截斷與單次 Token 計算 (徹底消滅 while 迴圈)
                 # ==========================================
+                MAX_HISTORY_MESSAGES = 10 
                 history_messages = st.session_state.messages[:-1]
-                
+                overflow_buffer = []
+    
+                if len(history_messages) > MAX_HISTORY_MESSAGES:
+                    overflow_buffer = history_messages[:-MAX_HISTORY_MESSAGES]
+                    history_messages = history_messages[-MAX_HISTORY_MESSAGES:]
+    
                 # 確保結構完整，由 User 開頭
                 if history_messages and history_messages[0]["role"] == "assistant":
+                    if len(history_messages) > 1:
+                        overflow_buffer.append(history_messages[0])
                     history_messages = history_messages[1:]
-
-                overflow_buffer = []
-                while True:
-                    # ==========================================
-                    # 1. 修正：移除耗時的 while 迴圈，改採固定輪數截斷與單次計算
-                    # ==========================================
-                    MAX_HISTORY_MESSAGES = 10 # 限制最多保留最近 10 筆訊息 (5個問答回合)
-                    history_messages = st.session_state.messages[:-1]
-                    overflow_buffer = []
     
-                    if len(history_messages) > MAX_HISTORY_MESSAGES:
-                        # 抓出溢出準備被丟棄的對話
-                        overflow_buffer = history_messages[:-MAX_HISTORY_MESSAGES]
-                        # 只保留最近的對話
-                        history_messages = history_messages[-MAX_HISTORY_MESSAGES:]
-    
-                    # 確保結構完整，由 User 開頭
-                    if history_messages and history_messages[0]["role"] == "assistant":
-                        if len(history_messages) > 1:
-                            overflow_buffer.append(history_messages[0])
-                        history_messages = history_messages[1:]
-    
-                    # 若有剔除的對話，執行背景摘要並更新全域記憶
-                    if overflow_buffer:
-                        curr_global_mem = load_global_memory()
-                        new_global_mem = summarize_overflow(overflow_buffer, curr_global_mem)
-                        update_global_memory(new_global_mem)
-                        st.toast("🧠 AI 已將舊對話轉為全域記憶保存", icon="💡")
-    
-                    gemini_history = build_gemini_history(history_messages)
-                    
-                    # 只發送一次網路請求來計算當前花費的 Token
-                    try:
-                        token_info = ai_client.models.count_tokens(
-                            model=AI_MODEL, 
-                            contents=gemini_history + message_contents
-                        )
-                        st.caption(f"📊 本次請求預估消耗 Token: {token_info.total_tokens}")
-                    except:
-                        pass # 忽略計算錯誤，不影響主程式運行
-                    
                 # 若有剔除的對話，執行背景摘要並更新全域記憶
                 if overflow_buffer:
                     curr_global_mem = load_global_memory()
                     new_global_mem = summarize_overflow(overflow_buffer, curr_global_mem)
                     update_global_memory(new_global_mem)
                     st.toast("🧠 AI 已將舊對話轉為全域記憶保存", icon="💡")
-
+    
+                gemini_history = build_gemini_history(history_messages)
+                
+                # 單次計算 Token，絕不卡頓
+                try:
+                    token_info = ai_client.models.count_tokens(
+                        model=AI_MODEL, 
+                        contents=gemini_history + message_contents
+                    )
+                    st.caption(f"📊 本次請求預估消耗 Token: {token_info.total_tokens}")
+                except Exception:
+                    pass
+    
                 # ==========================================
-                # 建立攜帶「全域記憶」與「截斷後歷史」的 Session
+                # 3. 建立攜帶全域記憶的 Session 並送出
                 # ==========================================
                 global_memory_context = load_global_memory()
                 dynamic_system_prompt = f"你是一位量化交易員。請全程使用繁體中文，善用 Tools。\\n【不可遺忘的全域記憶】：\\n{global_memory_context}"
                 
                 chat_session = ai_client.chats.create(
                     model=AI_MODEL,
-                    history=build_gemini_history(history_messages),
+                    history=gemini_history,
                     config=types.GenerateContentConfig(
                         system_instruction=dynamic_system_prompt,
                         tools=[record_trade, get_portfolio_summary, fetch_stock_data, scan_market_opportunities, run_backtest],
@@ -474,11 +454,14 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                 st.markdown(final_text)
                 st.session_state.messages.append({"role": "assistant", "content": final_text})
                 save_chat_message(st.session_state.current_session_id, "assistant", final_text)
-
+    
             except Exception as e:
                 st.error(f"❌ 錯誤：{str(e)}")
             finally:
-                if tmp_path and os.path.exists(tmp_path): os.remove(tmp_path)
+                if tmp_path and os.path.exists(tmp_path): 
+                    os.remove(tmp_path)
                 if gemini_file:
-                    try: ai_client.files.delete(name=gemini_file.name)
-                    except: pass
+                    try: 
+                        ai_client.files.delete(name=gemini_file.name)
+                    except: 
+                        pass
