@@ -552,7 +552,7 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我記錄買入 2330 100
                         tmp_path = tmp.name
                         
                     # 透過 Gemini SDK 將實體檔案上傳至 Google 雲端空間
-                    gemini_file = ai_client.files.upload(file=tmp_path, display_name=uploaded_file.name)
+                    gemini_file = ai_client.files.upload(file=tmp_path, config={'display_name': uploaded_file.name})
                     message_contents.append(gemini_file)
 
                 # 建立拋棄式 Session
