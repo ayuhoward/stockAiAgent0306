@@ -10,6 +10,7 @@ import pandas_ta as ta
 import vectorbt as vbt
 import psycopg2
 import streamlit as st
+import tempfile  #處理檔案暫存檔
 from google import genai
 from google.genai import types
 
@@ -514,6 +515,20 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
+# === 檔案上傳區塊 (顯示於側邊欄) ===
+with st.sidebar:
+    st.header("📎 附加檔案與圖片")
+    st.info("上傳 K線截圖、財報 PDF 或對帳單讓 AI 一併分析。")
+    uploaded_file = st.file_uploader(
+        "選擇檔案", 
+        type=["png", "jpg", "jpeg", "pdf", "csv", "txt"],
+        label_visibility="collapsed"
+    )
+    if uploaded_file:
+        st.success(f"已夾帶：{uploaded_file.name}")
+        st.caption("💡 現在請在下方對話框輸入你的問題，送出後 AI 會連同此檔案一起判讀。")
+# ==========================================
+
 # --- 處理使用者輸入 ---
 if prompt := st.chat_input("請輸入指令 (例如: 幫我記錄買入 2330 1000股 2000元)"):
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -523,13 +538,42 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我記錄買入 2330 100
     with st.chat_message("assistant"):
         with st.spinner("🤔 AI 正在分析與存取資料庫..."):
             try:
-                # 這裡直接呼叫保存在 session_state 中的 chat_session
-                response = st.session_state.chat_session.send_message(prompt)
+               # 準備傳送給 AI 的內容清單
+                message_contents = [prompt]
+                gemini_file = None
+                tmp_path = None
                 
+                # 如果使用者有上傳檔案，進行轉檔與上傳處理
+                if uploaded_file is not None:
+                    file_ext = uploaded_file.name.split('.')[-1]
+                    # 建立實體暫存檔
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_ext}") as tmp:
+                        tmp.write(uploaded_file.getvalue())
+                        tmp_path = tmp.name
+                        
+                    # 透過 Gemini SDK 將實體檔案上傳至 Google 雲端空間
+                    gemini_file = ai_client.files.upload(file=tmp_path, display_name=uploaded_file.name)
+                    message_contents.append(gemini_file)
+
+                # 建立拋棄式 Session
+                local_chat_session = ai_client.chats.create(
+                    model=AI_MODEL,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        tools=[record_trade, get_portfolio_summary, fetch_stock_data, fetch_chip_data, fetch_stock_news, scan_market_opportunities, run_backtest], # 順便幫你補齊了所有 Tool
+                        temperature=0.2,
+                        automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                            maximum_remote_calls=5
+                        )
+                    )
+                )
+                
+                # 將「文字 + 檔案(若有)」一同送出給 AI
+                response = local_chat_session.send_message(message_contents)
                 final_text = response.text if response.text else "❌ AI 執行完畢，但未產出文字總結。"
+                
                 st.markdown(final_text)
                 st.session_state.messages.append({"role": "assistant", "content": final_text})
-                
             except Exception as e:
                 error_msg = f"❌ 處理時發生錯誤：{str(e)}"
                 st.error(error_msg)
