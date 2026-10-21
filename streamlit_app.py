@@ -234,62 +234,70 @@ def get_portfolio_summary() -> dict:
         portfolio.append({"symbol": symbol, "shares": shares, "avg_cost": avg_cost, "current_price": curr_price, "unrealized_pnl": round(mkt_val - cost_val, 2)})
     return {"summary": {"total_cost": round(total_cost, 2), "total_unrealized_pnl": round(total_market_val - total_cost, 2)}, "portfolio": portfolio}
 
-def fetch_stock_data(symbol: str) -> dict:
-    """獲取台股或美股的日線、週線、技術指標 (RSI, MACD, 布林通道) 與支撐壓力位。"""
+def fetch_stock_data(symbol: str, interval: str = "1d", period: str = "1y") -> dict:
+    """
+    獲取股票的歷史數據與技術指標。
+    - interval 支援: "1d"(日線), "1wk"(週線), "5m"(五分K), "15m"(十五分K), "60m"(小時K)。
+    - period 支援: "1y", "6mo", "1mo", "5d"。
+    注意：若要分析分K線 (如五分K戰法)，AI 應自動將 period 設為 "60d" 或更短。
+    """
     clean_symbol = normalize_symbol(symbol)
     try:
+        # 防呆機制：yfinance 的分 K 資料 (含有 m) 最多只能抓最近 60 天
+        if "m" in interval and period in ["1y", "2y", "max", "ytd"]:
+            period = "60d"
+
         ticker = yf.Ticker(clean_symbol)
-        hist_daily = ticker.history(period="1y")
+        df = ticker.history(period=period, interval=interval)
         
-        if hist_daily.empty and clean_symbol.endswith(".TW"):
+        # 處理上櫃股票後綴
+        if df.empty and clean_symbol.endswith(".TW"):
             clean_symbol = clean_symbol.replace(".TW", ".TWO")
             ticker = yf.Ticker(clean_symbol)
-            hist_daily = ticker.history(period="1y")
+            df = ticker.history(period=period, interval=interval)
             
-        if hist_daily.empty:
-            return {"error": f"找不到股票代碼 {symbol} 的相關數據。"}
+        if df.empty:
+            return {"error": f"找不到股票代碼 {symbol} 在級別 {interval} 的相關數據。"}
 
-        hist_weekly = ticker.history(period="2y", interval="1wk")
+        # 計算技術指標 (均線、RSI)
+        df.ta.sma(length=5, append=True)
+        df.ta.sma(length=20, append=True)
+        df.ta.sma(length=60, append=True)
+        df.ta.rsi(length=14, append=True)
 
-        # 計算技術指標
-        hist_daily.ta.sma(length=5, append=True)
-        hist_daily.ta.sma(length=20, append=True)
-        hist_daily.ta.sma(length=60, append=True)
-        hist_daily.ta.rsi(length=14, append=True)
+        # 新增：計算 KD 指標 (Stochastic Oscillator)
+        # k=9, d=3, smooth_k=3 是一般台股看盤軟體常用的 933 參數
+        kd = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3, smooth_k=3)
+        if kd is not None and not kd.empty:
+            df = pd.concat([df, kd], axis=1)
 
-        latest_d = hist_daily.iloc[-1]
-        prev_d = hist_daily.iloc[-2] if len(hist_daily) > 1 else latest_d
-        recent_30d = hist_daily.tail(30)
+        latest_d = df.iloc[-1]
+        prev_d = df.iloc[-2] if len(df) > 1 else latest_d
 
-        # 計算漲跌幅
+        # 漲跌幅
         change_pct = ((latest_d['Close'] - prev_d['Close']) / prev_d['Close']) * 100
 
-        # 計算週線趨勢
-        weekly_trend = "N/A"
-        if not hist_weekly.empty and len(hist_weekly) >= 20:
-            hist_weekly.ta.sma(length=20, append=True)
-            latest_w = hist_weekly.iloc[-1]
-            if 'SMA_20' in latest_w and not pd.isna(latest_w['SMA_20']):
-                weekly_trend = "多頭趨勢 (站上20週均線)" if latest_w['Close'] > latest_w['SMA_20'] else "整理/空頭趨勢"
+        # 安全取值函式，避免 NaN 報錯
+        def safe_get(key):
+            val = latest_d.get(key)
+            return round(float(val), 2) if pd.notna(val) else "N/A"
 
         return {
             "symbol": clean_symbol,
-            "date": str(hist_daily.index[-1].strftime('%Y-%m-%d')),
+            "data_interval": interval,  # 讓 AI 確認它目前拿到的是什麼層級的資料
+            "latest_time": str(df.index[-1]),
             "close_price": round(float(latest_d['Close']), 2),
             "change_percent": f"{round(float(change_pct), 2)}%",
             "moving_averages": {
-                "sma5": round(float(latest_d.get('SMA_5', 0)), 2) if not pd.isna(latest_d.get('SMA_5')) else "N/A",
-                "sma20": round(float(latest_d.get('SMA_20', 0)), 2) if not pd.isna(latest_d.get('SMA_20')) else "N/A",
-                "sma60": round(float(latest_d.get('SMA_60', 0)), 2) if not pd.isna(latest_d.get('SMA_60')) else "N/A",
+                "sma5": safe_get('SMA_5'),
+                "sma20": safe_get('SMA_20'),
+                "sma60": safe_get('SMA_60'),
             },
             "momentum_indicators": {
-                "rsi_14": round(float(latest_d.get('RSI_14', 0)), 2) if not pd.isna(latest_d.get('RSI_14')) else "N/A",
-            },
-            "support_resistance": {
-                "resistance_30d": round(float(recent_30d['High'].max()), 2),
-                "support_30d": round(float(recent_30d['Low'].min()), 2)
-            },
-            "weekly_trend": weekly_trend
+                "rsi_14": safe_get('RSI_14'),
+                "kd_k9": safe_get('STOCHk_9_3_3'),  # KD 的 K 值
+                "kd_d3": safe_get('STOCHd_9_3_3')   # KD 的 D 值
+            }
         }
     except Exception as e:
         return {"error": f"抓取技術面數據時發生錯誤: {str(e)}"}
@@ -343,37 +351,51 @@ def fetch_stock_news(symbol: str) -> dict:
     except Exception as e:
         return {"error": f"抓取新聞時發生錯誤: {str(e)}"}
 
-
 def scan_market_opportunities(market: str = "TW") -> dict:
-    """自動掃描熱門選股池，根據技術面動能與均線多頭排列過濾出潛力標的。"""
-    watch_list = ["2303.TW", "2481.TW", "3264.TW", "3533.TW", "2330.TW", "2454.TW", "2317.TW"] if market.upper() == "TW" else ["AAPL", "NVDA", "TSLA", "MSFT", "AMD", "GOOGL", "AMZN"]
+    """掃描選股池，利用五分K與 KD 指標過濾潛力標的。"""
+    watch_list = ["2303.TW", "2481.TW", "5328.TW", "3264.TW", "3533.TW"] if market.upper() == "TW" else ["AAPL", "NVDA", "TSLA"]
     opportunities = []
 
     for symbol in watch_list:
         try:
-            df = yf.download(symbol, period="6mo", progress=False)
+            # 針對五分K戰法，改抓最近 5 天的 5 分鐘 K 線數據
+            df = yf.download(symbol, period="5d", interval="5m", progress=False)
             if df.empty or len(df) < 30: continue
+            
             close = df["Close"].squeeze()
+            high = df["High"].squeeze()
+            low = df["Low"].squeeze()
+
+            # 計算均線
             sma5 = ta.sma(close, length=5).iloc[-1]
             sma20 = ta.sma(close, length=20).iloc[-1]
-            rsi14 = ta.rsi(close, length=14).iloc[-1]
+            
+            # 計算 KD 指標 (使用預設參數 RSV=9, K=3, D=3)
+            kd = ta.stoch(high, low, close, k=9, d=3, smooth_k=3)
+            if kd is None or kd.empty: continue
+            
+            k_val = kd["STOCHk_9_3_3"].iloc[-1]
+            d_val = kd["STOCHd_9_3_3"].iloc[-1]
 
             curr_price = float(close.iloc[-1])
-            if curr_price > sma20 and sma5 > sma20 and 48 <= rsi14 <= 75:
+            
+            # 核心濾網：價格站上 20T 均線，短均線上穿長均線，且 KD 處於多頭區間 (K > D 且未達 80 嚴重超買)
+            if curr_price > sma20 and sma5 > sma20 and k_val > d_val and k_val < 80:
                 opportunities.append({
                     "symbol": symbol,
                     "current_price": round(curr_price, 2),
                     "sma5": round(float(sma5), 2),
                     "sma20": round(float(sma20), 2),
-                    "rsi14": round(float(rsi14), 2)
+                    "k_value": round(float(k_val), 2),
+                    "d_value": round(float(d_val), 2)
                 })
         except Exception:
             continue
 
     return {"market": market, "matched_count": len(opportunities), "candidates": opportunities[:5]}
 
-def run_backtest(symbol: str, strategy: str = "sma_cross") -> dict:
-    """使用 vectorbt 執行歷史數據量化回測，計算勝率、獲利因子、最大回撤 (MDD) 與總報酬率。"""
+def run_backtest(symbol: str, strategy: str = "sma_cross", trailing_stop_pct: float = 0.08) -> dict:
+    """使用 vectorbt 執行歷史數據量化回測，並內建移動停損 (Trailing Stop) 鎖利機制。"""
     clean_symbol = normalize_symbol(symbol)
     try:
         df = yf.download(clean_symbol, period="2y", progress=False)
@@ -381,16 +403,28 @@ def run_backtest(symbol: str, strategy: str = "sma_cross") -> dict:
             return {"error": f"找不到 {clean_symbol} 的歷史價格資料。"}
 
         price = df["Close"].squeeze()
+        
+        # 產生進出場訊號
         if strategy == "rsi_signal":
             rsi = ta.rsi(price, length=14)
-            entries, exits = rsi < 30, rsi > 70
+            entries = rsi < 30
+            exits = rsi > 70
         else:
             fast_ma = ta.sma(price, length=5)
             slow_ma = ta.sma(price, length=20)
             entries = (fast_ma > slow_ma) & (fast_ma.shift(1) <= slow_ma.shift(1))
             exits = (fast_ma < slow_ma) & (fast_ma.shift(1) >= slow_ma.shift(1))
 
-        portfolio = vbt.Portfolio.from_signals(price, entries, exits, init_cash=100000, fees=0.001425)
+        # 核心升級：加入移動停損與手續費設定
+        portfolio = vbt.Portfolio.from_signals(
+            price, 
+            entries, 
+            exits, 
+            init_cash=100000, 
+            fees=0.001425,
+            sl_stop=trailing_stop_pct,  # 設定停損比例 (預設 0.08 代表 8%)
+            sl_trail=True               # 啟動移動停損，隨最高價動態上移出場線
+        )
 
         def safe_float(val, multiplier=1.0, default=0.0):
             try:
@@ -409,6 +443,7 @@ def run_backtest(symbol: str, strategy: str = "sma_cross") -> dict:
         return {
             "symbol": clean_symbol,
             "strategy": strategy,
+            "trailing_stop_applied": f"{trailing_stop_pct * 100}%",
             "total_trades": total_trades,
             "win_rate_pct": f"{win_rate}%",
             "profit_factor": profit_factor,
