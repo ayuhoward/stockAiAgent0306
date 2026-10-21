@@ -351,54 +351,78 @@ def fetch_stock_news(symbol: str) -> dict:
     except Exception as e:
         return {"error": f"抓取新聞時發生錯誤: {str(e)}"}
 
-def scan_market_opportunities(market: str = "TW") -> dict:
-    """掃描選股池，利用五分K與 KD 指標過濾潛力標的。"""
-    watch_list = ["2303.TW", "2481.TW", "5328.TW", "3264.TW", "3533.TW"] if market.upper() == "TW" else ["AAPL", "NVDA", "TSLA"]
+def scan_market_opportunities(market: str = "TW", custom_symbols: list = None, strategy: str = "5m_kd") -> dict:
+    """
+    掃描選股池，尋找潛力標的。
+    - custom_symbols: 允許使用者指定股票代碼清單 (如 ["2330", "2303"])。未提供則使用預設名單。
+    - strategy: 支援 "5m_kd" (五分K+KD交叉短線策略) 與 "daily_rsi" (日線+RSI波段策略)。
+    """
+    if custom_symbols and isinstance(custom_symbols, list) and len(custom_symbols) > 0:
+        watch_list = [normalize_symbol(s) for s in custom_symbols]
+    else:
+        watch_list = ["2303.TW", "2481.TW", "5328.TW", "3264.TW", "3533.TW"] if market.upper() == "TW" else ["AAPL", "NVDA", "TSLA"]
+    
     opportunities = []
 
     for symbol in watch_list:
         try:
-            # 針對五分K戰法，改抓最近 5 天的 5 分鐘 K 線數據
-            df = yf.download(symbol, period="5d", interval="5m", progress=False)
-            if df.empty or len(df) < 30: continue
-            
-            close = df["Close"].squeeze()
-            high = df["High"].squeeze()
-            low = df["Low"].squeeze()
-
-            # 計算均線
-            sma5 = ta.sma(close, length=5).iloc[-1]
-            sma20 = ta.sma(close, length=20).iloc[-1]
-            
-            # 計算 KD 指標 (使用預設參數 RSV=9, K=3, D=3)
-            kd = ta.stoch(high, low, close, k=9, d=3, smooth_k=3)
-            if kd is None or kd.empty: continue
-            
-            k_val = kd["STOCHk_9_3_3"].iloc[-1]
-            d_val = kd["STOCHd_9_3_3"].iloc[-1]
-
-            curr_price = float(close.iloc[-1])
-            
-            # 核心濾網：價格站上 20T 均線，短均線上穿長均線，且 KD 處於多頭區間 (K > D 且未達 80 嚴重超買)
-            if curr_price > sma20 and sma5 > sma20 and k_val > d_val and k_val < 80:
-                opportunities.append({
-                    "symbol": symbol,
-                    "current_price": round(curr_price, 2),
-                    "sma5": round(float(sma5), 2),
-                    "sma20": round(float(sma20), 2),
-                    "k_value": round(float(k_val), 2),
-                    "d_value": round(float(d_val), 2)
-                })
+            if strategy == "5m_kd":
+                # 【短線策略】五分K戰法 + KD指標
+                df = yf.download(symbol, period="5d", interval="5m", progress=False)
+                if df.empty or len(df) < 30: continue
+                
+                close, high, low = df["Close"].squeeze(), df["High"].squeeze(), df["Low"].squeeze()
+                sma5, sma20 = ta.sma(close, length=5).iloc[-1], ta.sma(close, length=20).iloc[-1]
+                kd = ta.stoch(high, low, close, k=9, d=3, smooth_k=3)
+                
+                if kd is None or kd.empty: continue
+                k_val, d_val = kd["STOCHk_9_3_3"].iloc[-1], kd["STOCHd_9_3_3"].iloc[-1]
+                curr_price = float(close.iloc[-1])
+                
+                # 濾網條件：均線多頭且 KD 黃金交叉且未嚴重超買
+                if curr_price > sma20 and sma5 > sma20 and k_val > d_val and k_val < 80:
+                    opportunities.append({
+                        "symbol": symbol, "current_price": round(curr_price, 2),
+                        "sma5": round(float(sma5), 2), "sma20": round(float(sma20), 2),
+                        "k_value": round(float(k_val), 2), "d_value": round(float(d_val), 2)
+                    })
+                    
+            elif strategy == "daily_rsi":
+                # 【波段策略】日線 + RSI指標
+                df = yf.download(symbol, period="6mo", interval="1d", progress=False)
+                if df.empty or len(df) < 30: continue
+                
+                close = df["Close"].squeeze()
+                sma5, sma20 = ta.sma(close, length=5).iloc[-1], ta.sma(close, length=20).iloc[-1]
+                rsi14 = ta.rsi(close, length=14).iloc[-1]
+                curr_price = float(close.iloc[-1])
+                
+                # 濾網條件：均線多頭且 RSI 處於動能加溫區 (48~75)
+                if curr_price > sma20 and sma5 > sma20 and 48 <= rsi14 <= 75:
+                    opportunities.append({
+                        "symbol": symbol, "current_price": round(curr_price, 2),
+                        "sma5": round(float(sma5), 2), "sma20": round(float(sma20), 2),
+                        "rsi14": round(float(rsi14), 2)
+                    })
         except Exception:
             continue
 
-    return {"market": market, "matched_count": len(opportunities), "candidates": opportunities[:5]}
+    return {"market": market, "strategy": strategy, "scanned_count": len(watch_list), "matched_count": len(opportunities), "candidates": opportunities}
 
 def run_backtest(symbol: str, strategy: str = "sma_cross", trailing_stop_pct: float = 0.08) -> dict:
-    """使用 vectorbt 執行歷史數據量化回測，並內建移動停損 (Trailing Stop) 鎖利機制。"""
+    """
+    執行量化回測。
+    - period 支援: "1mo", "3mo", "6mo", "1y", "2y", "max" 等。
+    注意：若 interval 為分K (如 5m)，period 強制最高只能設為 "60d"。
+    """
     clean_symbol = normalize_symbol(symbol)
+    
+    # 防呆機制：yfinance 限制分K最多只能抓 60 天
+    if "m" in interval and period in ["1y", "2y", "max", "ytd", "5y", "10y"]:
+        period = "60d"
     try:
-        df = yf.download(clean_symbol, period="2y", progress=False)
+        # 下載資料時帶入動態的 period
+        df = yf.download(clean_symbol, period=period, interval=interval, progress=False)
         if df.empty or "Close" not in df:
             return {"error": f"找不到 {clean_symbol} 的歷史價格資料。"}
 
