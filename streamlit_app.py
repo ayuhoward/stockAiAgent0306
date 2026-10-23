@@ -39,7 +39,7 @@ if not st.session_state.authenticated:
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 SUPABASE_URL = st.secrets["SUPABASE_DB_URL"]
 AI_MODEL = "gemini-3.5-flash-lite"
-MAX_TOKENS_LIMIT = 4000  # Token 安全上限設定
+MAX_TOKENS_LIMIT = 50000  # Token 安全上限設定
 
 # ---------------------------------------------------------
 # 2. 資料庫初始化 (新增聊天紀錄與全域記憶表)
@@ -647,7 +647,7 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                 # ==========================================
                 # 2. 固定輪數截斷與單次 Token 計算 (徹底消滅 while 迴圈)
                 # ==========================================
-                MAX_HISTORY_MESSAGES = 10 
+                MAX_HISTORY_MESSAGES = 30 
                 history_messages = st.session_state.messages[:-1].copy() # 複製一份，不動到原始 UI 資料
                 overflow_buffer = []
                 
