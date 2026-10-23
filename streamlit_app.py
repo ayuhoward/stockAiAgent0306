@@ -130,14 +130,34 @@ def load_chat_history(session_id: str):
     return [{"role": row[0], "content": row[1], "chart_json": row[2]} for row in rows]
 
 def get_all_sessions():
+    """撈取所有歷史對話，確保每個 session_id 唯一，並取第一句話當作標題"""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT session_id, content, MIN(created_at) FROM chat_history WHERE role = 'user' GROUP BY session_id, content ORDER BY MIN(created_at) DESC")
+    
+    # 按照時間由舊到新撈出所有使用者的對話
+    cursor.execute("SELECT session_id, content, created_at FROM chat_history WHERE role = 'user' ORDER BY created_at ASC")
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
-    return [{"session_id": row[0], "title": row[1][:15] + "..." if len(row[1])>15 else row[1]} for row in rows]
-
+    
+    # 利用 Python 字典過濾，確保同一個 session_id 只保留最一開始的那句話
+    session_dict = {}
+    for row in rows:
+        sid = row[0]
+        content = row[1]
+        if sid not in session_dict:
+            session_dict[sid] = content
+            
+    # 將結果轉換為串列，並反轉順序 (最新的對話排在側邊欄最上面)
+    result = []
+    for sid, content in reversed(list(session_dict.items())):
+        result.append({
+            "session_id": sid, 
+            "title": content[:15] + "..." if len(content) > 15 else content
+        })
+        
+    return result
+    
 def delete_session(session_id: str):
     conn = get_db_connection()
     cursor = conn.cursor()
