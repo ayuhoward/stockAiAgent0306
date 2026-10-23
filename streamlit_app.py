@@ -103,13 +103,15 @@ def normalize_symbol(symbol: str) -> str:
 # ---------------------------------------------------------
 # 3. Session & 記憶管理 DB 操作
 # ---------------------------------------------------------
-def save_chat_message(session_id: str, role: str, content: str):
+def save_chat_message(session_id: str, role: str, content: str, chart_json: str = None):
     conn = get_db_connection()
     cursor = conn.cursor()
+    
     cursor.execute(
         "INSERT INTO chat_history (session_id, role, content, chart_json) VALUES (%s, %s, %s, %s)",
         (session_id, role, content, chart_json)
-    )    
+    )
+    
     conn.commit()
     cursor.close()
     conn.close()
