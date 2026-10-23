@@ -684,7 +684,7 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                 # 3. 建立攜帶全域記憶的 Session 並送出
                 # ==========================================
                 global_memory_context = load_global_memory()
-                dynamic_system_prompt = f"你是一位量化交易員。請全程使用繁體中文，請務必善用 tools。\\n【不可遺忘的全域記憶】：\\n{global_memory_context} \n"
+                dynamic_system_prompt = (f"你是一位量化交易員。請全程使用繁體中文，請務必善用 tools。\\n【不可遺忘的全域記憶】：\\n{global_memory_context} \n"
                 "【專業分析規範】\n"
                 "1. **市場掃描與交易機會 (需求 1)**：\n"
                 "   * 當使用者要求「掃描市場」或「尋找交易機會」時，呼叫 `scan_market_opportunities`。\n"
@@ -705,7 +705,7 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                 "5. 呼叫畫圖工具後，【絕對禁止】道歉或說「受限於文字介面無法畫圖」。你必須以自信的語氣回覆：「已為您在畫面下方繪製最新的 K 線圖，請參考。」\n\n"
                 "【分析要求】\n"
                 "• 執行 `run_backtest` 後，請根據回傳的勝率 (win_rate_pct)、獲利因子 (profit_factor) 與最大回撤 (max_drawdown_mdd_pct)，精確點出該策略優缺點，並給出 2~3 條具體改進建議。\n"
-                "• 全程使用繁體中文，採用專業 Markdown 格式。"
+                "• 全程使用繁體中文，採用專業 Markdown 格式。")
 
                 
                 
