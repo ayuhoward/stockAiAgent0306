@@ -253,27 +253,35 @@ def get_portfolio_summary() -> dict:
 def fetch_stock_data(symbol: str, interval: str = "1d", period: str = "1y") -> dict:
     """
     獲取股票的歷史數據與技術指標。
-    - interval 支援: "1d"(日線), "1wk"(週線), "5m"(五分K), "15m"(十五分K), "60m"(小時K)。
-    - period 支援: "1y", "6mo", "1mo", "5d"。
-    注意：若要分析分K線 (如五分K戰法)，AI 應自動將 period 設為 "60d" 或更短。
+    - 支援相對時間 period: "1y", "6mo", "1mo"
+    - 也支援絕對日期 start_date 與 end_date: 格式為 "YYYY-MM-DD" (例如 "2026-09-01")
+    若有提供 start_date，將優先使用精確日期區間。
     """
     clean_symbol = normalize_symbol(symbol)
     try:
-        # 防呆機制：yfinance 的分 K 資料 (含有 m) 最多只能抓最近 60 天
-        if "m" in interval and period in ["1y", "2y", "max", "ytd"]:
-            period = "60d"
-
         ticker = yf.Ticker(clean_symbol)
-        df = ticker.history(period=period, interval=interval)
+        
+        # 核心修改：判斷是否有傳入指定日期
+        if start_date:
+            # 若沒有提供 end_date，yfinance 預設會抓到今天
+            df = ticker.history(start=start_date, end=end_date, interval=interval)
+        else:
+            # 防呆機制：yfinance 的分 K 資料 (含有 m) 最多只能抓最近 60 天
+            if "m" in interval and period in ["1y", "2y", "max", "ytd"]:
+                period = "60d"
+            df = ticker.history(period=period, interval=interval)
         
         # 處理上櫃股票後綴
         if df.empty and clean_symbol.endswith(".TW"):
             clean_symbol = clean_symbol.replace(".TW", ".TWO")
             ticker = yf.Ticker(clean_symbol)
-            df = ticker.history(period=period, interval=interval)
-            
+            if start_date:
+                df = ticker.history(start=start_date, end=end_date, interval=interval)
+            else:
+                df = ticker.history(period=period, interval=interval)
+                
         if df.empty:
-            return {"error": f"找不到股票代碼 {symbol} 在級別 {interval} 的相關數據。"}
+            return {"error": f"找不到 {symbol} 的數據，請確認日期區間內是否有交易日。"}
 
         # 計算技術指標 (均線、RSI)
         df.ta.sma(length=5, append=True)
