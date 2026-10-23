@@ -751,6 +751,11 @@ if "render_chart_for" in st.session_state and st.session_state.render_chart_for:
     try:
         # 這裡把寫死的 "6mo" 換成動態變數 chart_period
         df = yf.download(chart_symbol, period=chart_period, progress=False)
+
+        # 如果抓不到資料，且代碼是 .TW 結尾，自動切換成 .TWO (上櫃) 再抓一次
+        if df.empty and chart_symbol.endswith(".TW"):
+            chart_symbol = chart_symbol.replace(".TW", ".TWO")
+            df = yf.download(chart_symbol, period=chart_period, progress=False)
         
         if not df.empty:
             fig = go.Figure(data=[go.Candlestick(
