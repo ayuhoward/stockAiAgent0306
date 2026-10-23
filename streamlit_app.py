@@ -620,12 +620,11 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                 # 2. 固定輪數截斷與單次 Token 計算 (徹底消滅 while 迴圈)
                 # ==========================================
                 MAX_HISTORY_MESSAGES = 10 
-                history_messages = st.session_state.messages[:-1]
-                overflow_buffer = []
-    
+                history_messages = st.session_state.messages[:-1].copy() # 複製一份，不動到原始 UI 資料
+                
                 if len(history_messages) > MAX_HISTORY_MESSAGES:
                     overflow_buffer = history_messages[:-MAX_HISTORY_MESSAGES]
-                    history_messages = history_messages[-MAX_HISTORY_MESSAGES:]
+                    history_messages = history_messages[-MAX_HISTORY_MESSAGES:] # 這裡只改變傳給 AI 的陣列
     
                 # 確保結構完整，由 User 開頭
                 if history_messages and history_messages[0]["role"] == "assistant":
