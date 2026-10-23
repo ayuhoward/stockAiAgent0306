@@ -8,6 +8,7 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 import plotly.graph_objects as go
+import plotly.io as pio
 import psycopg2
 import streamlit as st
 import tempfile
@@ -73,6 +74,12 @@ def init_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # chart_json欄位，用來存 Plotly 圖表的 JSON
+    cursor.execute('''
+        ALTER TABLE chat_history 
+        ADD COLUMN IF NOT EXISTS chart_json TEXT
+    ''')
     
     # 若全域記憶為空，插入預設值
     cursor.execute("SELECT COUNT(*) FROM global_memory")
@@ -99,7 +106,10 @@ def normalize_symbol(symbol: str) -> str:
 def save_chat_message(session_id: str, role: str, content: str):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO chat_history (session_id, role, content) VALUES (%s, %s, %s)", (session_id, role, content))
+    cursor.execute(
+        "INSERT INTO chat_history (session_id, role, content, chart_json) VALUES (%s, %s, %s, %s)",
+        (session_id, role, content, chart_json)
+    )    
     conn.commit()
     cursor.close()
     conn.close()
@@ -107,11 +117,15 @@ def save_chat_message(session_id: str, role: str, content: str):
 def load_chat_history(session_id: str):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT role, content FROM chat_history WHERE session_id = %s ORDER BY id ASC", (session_id,))
+    cursor.execute(
+        "SELECT role, content, chart_json FROM chat_history WHERE session_id = %s ORDER BY id ASC",
+        (session_id,)
+    )    
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
-    return [{"role": row[0], "content": row[1]} for row in rows]
+    # 將撈出來的資料打包成 Streamlit 看得懂的 dict
+    return [{"role": row[0], "content": row[1], "chart_json": row[2]} for row in rows]
 
 def get_all_sessions():
     conn = get_db_connection()
@@ -568,6 +582,14 @@ with st.sidebar:
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+        
+        # 如果這筆訊息帶有圖表資料，就把它還原並畫出來！
+        if msg.get("chart_json"):
+            try:
+                fig = pio.from_json(msg["chart_json"])
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.error("圖表還原失敗")
 
 # === 處理新訊息 ===
 if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線圖，或買入 2481 強茂 1000股)"):
@@ -717,6 +739,27 @@ if "render_chart_for" in st.session_state and st.session_state.render_chart_for:
                 height=500
             )
             st.plotly_chart(fig, use_container_width=True)
+
+            ########### 將圖表轉json存入DB中 ##########
+            # 1. 轉成 JSON 字串
+            fig_json = fig.to_json()
+            
+            # 2. 顯示在畫面上
+            # st.plotly_chart(fig)
+            
+            # 3. 將圖表 JSON 一併存入記憶與資料庫 (取代原本只存 content 的寫法)
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": final_text, 
+                "chart_json": fig_json  # <--- 把圖表掛在對話字典裡
+            })
+            save_chat_message(
+                st.session_state.current_session_id, 
+                "assistant", 
+                final_text, 
+                fig_json                # <--- 存進 Supabase
+            )
+            
         else:
             st.warning(f"無法獲取 {chart_symbol} 在 {chart_period} 期間的歷史資料。")
             
