@@ -21,17 +21,6 @@ from google.genai import types
 from openai import OpenAI
 from youtube_transcript_api import YouTubeTranscriptApi
 
-ydl_opts = {
-                'format': 'm4a/bestaudio/best',
-                'outtmpl': audio_path,
-                'quiet': True,
-                # 加入這段偽裝標頭
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                },
-                'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'm4a'}]
-            }
-
 # ---------------------------------------------------------
 # 1. 網頁基本設定與資安防護
 # ---------------------------------------------------------
