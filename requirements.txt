@@ -11,3 +11,6 @@ plotly<6.0.0
 supabase
 plotly
 youtube-transcript-api
+yt-dlp 
+openai
+pydub
