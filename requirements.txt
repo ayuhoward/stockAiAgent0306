@@ -13,5 +13,4 @@ plotly
 youtube-transcript-api
 yt-dlp 
 openai
-pydub
-pyaudioop
+
