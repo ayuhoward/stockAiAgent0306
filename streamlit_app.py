@@ -19,7 +19,6 @@ import yt_dlp
 from google import genai
 from google.genai import types
 from openai import OpenAI
-from pydub import AudioSegment
 from youtube_transcript_api import YouTubeTranscriptApi
 
 
