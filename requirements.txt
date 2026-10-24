@@ -11,6 +11,5 @@ plotly<6.0.0
 supabase
 plotly
 youtube-transcript-api
-yt-dlp 
+yt-dlp>=2024.10.0
 openai
-
