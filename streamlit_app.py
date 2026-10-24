@@ -605,7 +605,7 @@ with st.sidebar:
                 
     st.divider()
     st.header("📎 附加檔案分析")
-    uploaded_file = st.file_uploader("上傳 K線截圖或財報", type=["png", "jpg", "pdf", "csv"], label_visibility="collapsed")
+    uploaded_file = st.file_uploader("上傳任何檔案 (如影片、音檔、圖片、程式碼)", label_visibility="collapsed")
     if uploaded_file: st.success(f"已暫存：{uploaded_file.name}")
 
 # === 顯示歷史訊息 ===
