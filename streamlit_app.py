@@ -14,8 +14,13 @@ import streamlit as st
 import tempfile
 import uuid
 import vectorbt as vbt
+import yt_dlp
 from google import genai
 from google.genai import types
+from openai import OpenAI
+from pydub import AudioSegment
+from youtube_transcript_api import YouTubeTranscriptApi
+
 
 # ---------------------------------------------------------
 # 1. 網頁基本設定與資安防護
@@ -206,6 +211,96 @@ def show_stock_chart(symbol: str, period: str = "6mo") -> dict:
         "status": "success", 
         "message": f"已成功觸發網頁前端繪製 {clean_symbol} 的 {period} K 線圖。"
     }
+
+# ---------------------------------------------------------
+#  影片內容分析 Tool
+# ---------------------------------------------------------
+def fetch_youtube_transcript(url: str) -> dict:
+    """
+    獲取 YouTube 影片字幕。
+    具備 CC 字幕秒抓機制，與超過 25MB 大檔案音軌自動切割 (PyDub) 轉 Whisper API 的雙層備援防呆。
+    """
+    # 1. 解析 Video ID
+    video_id = None
+    if "v=" in url:
+        video_id = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("v", [None])[0]
+    elif "youtu.be/" in url:
+        video_id = url.split("youtu.be/")[1].split("?")[0]
+        
+    if not video_id:
+        return {"error": "無法解析 YouTube 影片 ID，請確認網址格式。"}
+
+    # 2. 優先嘗試官方 CC 字幕
+    try:
+        transcript = YouTubeTranscriptApi.get_transcript(
+            video_id, 
+            languages=['zh-TW', 'zh-Hant', 'zh-Hans', 'zh-CN', 'en']
+        )
+        full_text = " ".join([t['text'] for t in transcript])
+        return {
+            "status": "success", 
+            "method": "cc_subtitle",
+            "message": "成功取得官方 CC 字幕", 
+            "transcript_summary": full_text
+        }
+    except Exception:
+        pass # 找不到官方字幕，默默進入下方 Whisper 備援
+        
+    # 3. 備援機制：下載音軌並依據大小決定是否切割
+    try:
+        openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_path = os.path.join(tmpdir, 'audio.m4a')
+            
+            # 僅下載 m4a 音軌
+            ydl_opts = {
+                'format': 'm4a/bestaudio/best',
+                'outtmpl': audio_path,
+                'quiet': True,
+                'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'm4a'}]
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+            
+            file_size = os.path.getsize(audio_path)
+            max_size = 24 * 1024 * 1024 # 設定安全閥值為 24MB
+            full_transcript = ""
+
+            if file_size > max_size:
+                # 檔案過大，啟動 PyDub 切割 (每 10 分鐘一軌)
+                audio = AudioSegment.from_file(audio_path, format="m4a")
+                chunk_length_ms = 10 * 60 * 1000 
+                chunks = [audio[i:i + chunk_length_ms] for i in range(0, len(audio), chunk_length_ms)]
+
+                for idx, chunk in enumerate(chunks):
+                    chunk_path = os.path.join(tmpdir, f'chunk_{idx}.m4a')
+                    chunk.export(chunk_path, format="m4a")
+                    
+                    with open(chunk_path, "rb") as audio_file:
+                        res = openai_client.audio.transcriptions.create(
+                            model="whisper-1", 
+                            file=audio_file,
+                            response_format="text"
+                        )
+                        full_transcript += res + " "
+            else:
+                # 檔案小於 24MB，直接送入 Whisper
+                with open(audio_path, "rb") as audio_file:
+                    full_transcript = openai_client.audio.transcriptions.create(
+                        model="whisper-1", 
+                        file=audio_file,
+                        response_format="text"
+                    )
+
+            return {
+                "status": "success",
+                "method": "whisper_api_split" if file_size > max_size else "whisper_api",
+                "message": "成功透過 Whisper 取回完整逐字稿",
+                "transcript_summary": full_transcript.strip()
+            }
+    except Exception as e:
+        return {"error": f"無法獲取字幕且音軌辨識失敗: {str(e)}"}
 
 # ---------------------------------------------------------
 # 4. 財務與量化 Tools
@@ -702,19 +797,18 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                 "2. 當使用者要求『市場掃描』時，你【只能且必須只呼叫 `scan_market_opportunities`】！\n"
                 "3. 當使用者查詢『單一個股行情』時，才呼叫 `fetch_stock_data` 或 `fetch_chip_data`。\n"
                 "4. 當使用者要求「畫圖」、「K線圖」或「走勢圖」時，你【必須】呼叫 `show_stock_chart` 工具！\n"
-                "5. 呼叫畫圖工具後，【絕對禁止】道歉或說「受限於文字介面無法畫圖」。你必須以自信的語氣回覆：「已為您在畫面下方繪製最新的 K 線圖，請參考。」\n\n"
+                "5. 呼叫畫圖工具後，【絕對禁止】道歉或說「受限於文字介面無法畫圖」。你必須以自信的語氣回覆：「已為您在畫面下方繪製最新的 K 線圖，請參考。」\n"
+                "6. 當使用者貼上 YouTube 網址時，你【必須】呼叫 `fetch_youtube_transcript` 工具來獲取影片內容，並分析其中的財經觀點或提及的股票代碼。 \n\n"
                 "【分析要求】\n"
                 "• 執行 `run_backtest` 後，請根據回傳的勝率 (win_rate_pct)、獲利因子 (profit_factor) 與最大回撤 (max_drawdown_mdd_pct)，精確點出該策略優缺點，並給出 2~3 條具體改進建議。\n"
                 "• 全程使用繁體中文，採用專業 Markdown 格式。")
-
-                
                 
                 chat_session = ai_client.chats.create(
                     model=AI_MODEL,
                     history=gemini_history,
                     config=types.GenerateContentConfig(
                         system_instruction=dynamic_system_prompt,
-                        tools=[record_trade, get_portfolio_summary, fetch_stock_data, fetch_chip_data, fetch_stock_news, scan_market_opportunities, run_backtest, show_stock_chart],
+                        tools=[record_trade, get_portfolio_summary, fetch_stock_data, fetch_chip_data, fetch_stock_news, scan_market_opportunities, run_backtest, show_stock_chart, fetch_youtube_transcript],
                         temperature=0.2,
                         automatic_function_calling=types.AutomaticFunctionCallingConfig(maximum_remote_calls=5)
                     )
