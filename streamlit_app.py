@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import plotly.io as pio
 import psycopg2
 import streamlit as st
+import subprocess
 import tempfile
 import uuid
 import vectorbt as vbt
@@ -218,7 +219,7 @@ def show_stock_chart(symbol: str, period: str = "6mo") -> dict:
 def fetch_youtube_transcript(url: str) -> dict:
     """
     獲取 YouTube 影片字幕。
-    具備 CC 字幕秒抓機制，與超過 25MB 大檔案音軌自動切割 (PyDub) 轉 Whisper API 的雙層備援防呆。
+    具備 CC 字幕秒抓機制，與超過 24MB 大檔案音軌自動切割 (ffmpeg) 轉 Whisper API 的雙層備援防呆。
     """
     # 1. 解析 Video ID
     video_id = None
@@ -268,15 +269,19 @@ def fetch_youtube_transcript(url: str) -> dict:
             full_transcript = ""
 
             if file_size > max_size:
-                # 檔案過大，啟動 PyDub 切割 (每 10 分鐘一軌)
-                audio = AudioSegment.from_file(audio_path, format="m4a")
-                chunk_length_ms = 10 * 60 * 1000 
-                chunks = [audio[i:i + chunk_length_ms] for i in range(0, len(audio), chunk_length_ms)]
+                # 檔案過大，呼叫系統層級的 ffmpeg 無損切割 (每 600 秒 = 10 分鐘切一軌)
+                segment_pattern = os.path.join(tmpdir, "chunk_%03d.m4a")
+                subprocess.run([
+                    "ffmpeg", "-i", audio_path,
+                    "-f", "segment", "-segment_time", "600",
+                    "-c", "copy", segment_pattern
+                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+                # 找出所有切割後的檔案並排序
+                chunk_files = sorted([f for f in os.listdir(tmpdir) if f.startswith("chunk_") and f.endswith(".m4a")])
 
-                for idx, chunk in enumerate(chunks):
-                    chunk_path = os.path.join(tmpdir, f'chunk_{idx}.m4a')
-                    chunk.export(chunk_path, format="m4a")
-                    
+                for chunk_file in chunk_files:
+                    chunk_path = os.path.join(tmpdir, chunk_file)
                     with open(chunk_path, "rb") as audio_file:
                         res = openai_client.audio.transcriptions.create(
                             model="whisper-1", 
