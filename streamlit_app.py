@@ -706,6 +706,27 @@ with st.sidebar:
     uploaded_file = st.file_uploader("上傳任何檔案 (如影片、音檔、圖片、程式碼)", label_visibility="collapsed")
     if uploaded_file: st.success(f"已暫存：{uploaded_file.name}")
 
+    with st.sidebar:
+    st.markdown("---")
+    st.markdown("### 📊 API 流量與成本監控")
+    
+    # 顯示即時累計數據
+    col1, col2 = st.columns(2)
+    col1.metric("總 Input Tokens", f"{st.session_state.total_input_tokens:,}")
+    col2.metric("總 Output Tokens", f"{st.session_state.total_output_tokens:,}")
+    
+    # 計算預估成本 (USD)
+    estimated_cost = (st.session_state.total_input_tokens / 1000000 * 0.075) + \
+                     (st.session_state.total_output_tokens / 1000000 * 0.3)
+    
+    st.metric("預估花費 (USD)", f"${estimated_cost:.5f}")
+    
+    # 加上一個重置按鈕
+    if st.button("🔄 重置計數器", use_container_width=True):
+        st.session_state.total_input_tokens = 0
+        st.session_state.total_output_tokens = 0
+        st.rerun()
+
 # === 顯示歷史訊息 ===
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
@@ -721,6 +742,12 @@ for msg in st.session_state.messages:
 
 # === 處理新訊息 ===
 if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線圖，或買入 2481 強茂 1000股)"):
+
+    # 初始化 Token 累計變數
+    if "total_input_tokens" not in st.session_state:
+        st.session_state.total_input_tokens = 0
+    if "total_output_tokens" not in st.session_state:
+        st.session_state.total_output_tokens = 0
     
     st.session_state.messages.append({"role": "user", "content": prompt})
     save_chat_message(st.session_state.current_session_id, "user", prompt)
@@ -823,18 +850,23 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                 
                 st.markdown(final_text)
                 st.session_state.messages.append({"role": "assistant", "content": final_text})
-                save_chat_message(st.session_state.current_session_id, "assistant", final_text)
-    
-            except Exception as e:
-                st.error(f"❌ 錯誤：{str(e)}")
-            finally:
-                if tmp_path and os.path.exists(tmp_path): 
-                    os.remove(tmp_path)
-                if gemini_file:
-                    try: 
-                        ai_client.files.delete(name=gemini_file.name)
-                    except: 
-                        pass
+                save_chat_message(st.session_state.current_session_id, "assistant", final_text
+
+                # 🌟 新增：捕捉 Token 用量並累加
+                if hasattr(response, 'usage_metadata'):
+                    st.session_state.total_input_tokens += response.usage_metadata.prompt_token_count
+                    st.session_state.total_output_tokens += response.usage_metadata.candidates_token_count
+            
+                    except Exception as e:
+                        st.error(f"❌ 錯誤：{str(e)}")
+                    finally:
+                        if tmp_path and os.path.exists(tmp_path): 
+                            os.remove(tmp_path)
+                        if gemini_file:
+                            try: 
+                                ai_client.files.delete(name=gemini_file.name)
+                            except: 
+                                pass
 
 # 檢查 AI 是否有觸發畫圖指令
 if "render_chart_for" in st.session_state and st.session_state.render_chart_for:
