@@ -856,16 +856,16 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                     st.session_state.total_input_tokens += response.usage_metadata.prompt_token_count
                     st.session_state.total_output_tokens += response.usage_metadata.candidates_token_count
             
-                    except Exception as e:
-                        st.error(f"❌ 錯誤：{str(e)}")
-                    finally:
-                        if tmp_path and os.path.exists(tmp_path): 
-                            os.remove(tmp_path)
-                        if gemini_file:
-                            try: 
-                                ai_client.files.delete(name=gemini_file.name)
-                            except: 
-                                pass
+                except Exception as e:
+                    st.error(f"❌ 錯誤：{str(e)}")
+                finally:
+                    if tmp_path and os.path.exists(tmp_path): 
+                        os.remove(tmp_path)
+                    if gemini_file:
+                        try: 
+                            ai_client.files.delete(name=gemini_file.name)
+                        except: 
+                            pass
 
 # 檢查 AI 是否有觸發畫圖指令
 if "render_chart_for" in st.session_state and st.session_state.render_chart_for:
