@@ -706,7 +706,6 @@ with st.sidebar:
     uploaded_file = st.file_uploader("上傳任何檔案 (如影片、音檔、圖片、程式碼)", label_visibility="collapsed")
     if uploaded_file: st.success(f"已暫存：{uploaded_file.name}")
 
-    with st.sidebar:
     st.markdown("---")
     st.markdown("### 📊 API 流量與成本監控")
     
