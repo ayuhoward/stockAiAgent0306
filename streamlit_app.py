@@ -849,7 +849,7 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                 
                 st.markdown(final_text)
                 st.session_state.messages.append({"role": "assistant", "content": final_text})
-                save_chat_message(st.session_state.current_session_id, "assistant", final_text
+                save_chat_message(st.session_state.current_session_id, "assistant", final_text)
 
                 # 🌟 新增：捕捉 Token 用量並累加
                 if hasattr(response, 'usage_metadata'):
