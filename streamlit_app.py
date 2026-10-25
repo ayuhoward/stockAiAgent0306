@@ -669,7 +669,13 @@ st.title("🤖 AI 量化股市助手 (V2.0.2)")
 
 if "current_session_id" not in st.session_state:
     st.session_state.current_session_id = str(uuid.uuid4())
-    st.session_state.messages = [{"role": "assistant", "content": "👋 你好！已連線至 Supabase。請問今天想檢視 2303 聯電的五分K走勢，還是記錄交易呢？"}]
+    st.session_state.messages = [{"role": "assistant", "content": "👋 你好！已連線至 Supabase。請問今天想檢視 2303 聯電的五分K走勢，還是記錄交易呢
+
+# 初始化 Token 累計變數
+if "" not in st.session_state:
+    st.session_state.total_input_tokens = 0
+if "total_output_tokens" not in st.session_state:
+    st.session_state.total_output_tokens = 0
 
 # === 側邊欄：Session 管理與檔案上傳 ===
 with st.sidebar:
@@ -711,18 +717,18 @@ with st.sidebar:
     
     # 顯示即時累計數據
     col1, col2 = st.columns(2)
-    col1.metric("總 Input Tokens", f"{st.session_state.total_input_tokens:,}")
+    col1.metric("總 Input Tokens", f"{st.session_state.:,}")
     col2.metric("總 Output Tokens", f"{st.session_state.total_output_tokens:,}")
     
     # 計算預估成本 (USD)
-    estimated_cost = (st.session_state.total_input_tokens / 1000000 * 0.075) + \
+    estimated_cost = (st.session_state. / 1000000 * 0.075) + \
                      (st.session_state.total_output_tokens / 1000000 * 0.3)
     
     st.metric("預估花費 (USD)", f"${estimated_cost:.5f}")
     
     # 加上一個重置按鈕
     if st.button("🔄 重置計數器", use_container_width=True):
-        st.session_state.total_input_tokens = 0
+        st.session_state. = 0
         st.session_state.total_output_tokens = 0
         st.rerun()
 
@@ -741,13 +747,7 @@ for msg in st.session_state.messages:
 
 # === 處理新訊息 ===
 if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線圖，或買入 2481 強茂 1000股)"):
-
-    # 初始化 Token 累計變數
-    if "total_input_tokens" not in st.session_state:
-        st.session_state.total_input_tokens = 0
-    if "total_output_tokens" not in st.session_state:
-        st.session_state.total_output_tokens = 0
-    
+   
     st.session_state.messages.append({"role": "user", "content": prompt})
     save_chat_message(st.session_state.current_session_id, "user", prompt)
     with st.chat_message("user"): st.markdown(prompt)
