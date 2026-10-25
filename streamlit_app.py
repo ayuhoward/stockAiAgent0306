@@ -669,7 +669,7 @@ st.title("🤖 AI 量化股市助手 (V2.0.2)")
 
 if "current_session_id" not in st.session_state:
     st.session_state.current_session_id = str(uuid.uuid4())
-    st.session_state.messages = [{"role": "assistant", "content": "👋 你好！已連線至 Supabase。請問今天想檢視 2303 聯電的五分K走勢，還是記錄交易呢
+    st.session_state.messages = [{"role": "assistant", "content": "👋 你好！已連線至 Supabase。請問今天想檢視 2303 聯電的五分K走勢，還是記錄交易呢}]
 
 # 初始化 Token 累計變數
 if "" not in st.session_state:
