@@ -721,14 +721,14 @@ with st.sidebar:
     col2.metric("總 Output Tokens", f"{st.session_state.total_output_tokens:,}")
     
     # 計算預估成本 (USD)
-    estimated_cost = (st.session_state. / 1000000 * 0.075) + \
+    estimated_cost = (st.session_state.total_input_tokens / 1000000 * 0.075) + \
                      (st.session_state.total_output_tokens / 1000000 * 0.3)
     
     st.metric("預估花費 (USD)", f"${estimated_cost:.5f}")
     
     # 加上一個重置按鈕
     if st.button("🔄 重置計數器", use_container_width=True):
-        st.session_state. = 0
+        st.session_state.total_input_tokens = 0
         st.session_state.total_output_tokens = 0
         st.rerun()
 
