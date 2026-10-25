@@ -717,7 +717,7 @@ with st.sidebar:
     
     # 顯示即時累計數據
     col1, col2 = st.columns(2)
-    col1.metric("總 Input Tokens", f"{st.session_state.:,}")
+    col1.metric("總 Input Tokens", f"{st.session_state.total_input_tokens:,}")
     col2.metric("總 Output Tokens", f"{st.session_state.total_output_tokens:,}")
     
     # 計算預估成本 (USD)
