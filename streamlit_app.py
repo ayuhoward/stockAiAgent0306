@@ -672,7 +672,7 @@ if "current_session_id" not in st.session_state:
     st.session_state.messages = [{"role": "assistant", "content": "👋 你好！已連線至 Supabase。請問今天想檢視 2303 聯電的五分K走勢，還是記錄交易呢?"}]
 
 # 初始化 Token 累計變數
-if "" not in st.session_state:
+if "total_input_tokens" not in st.session_state:
     st.session_state.total_input_tokens = 0
 if "total_output_tokens" not in st.session_state:
     st.session_state.total_output_tokens = 0
