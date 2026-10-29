@@ -191,6 +191,9 @@ def update_global_memory(new_summary: str):
 # ---------------------------------------------------------
 # 畫視覺畫圖形 Tool
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# 畫視覺畫圖形 Tool
+# ---------------------------------------------------------
 def show_stock_chart(symbol: str, period: str = "6mo") -> dict:
     """
     當使用者要求畫 K 線圖、走勢圖時呼叫此工具。
@@ -200,17 +203,23 @@ def show_stock_chart(symbol: str, period: str = "6mo") -> dict:
     """
     clean_symbol = normalize_symbol(symbol)
     
-    # 把代碼和「時間長度」一起存進網頁暫存記憶體
-    st.session_state.render_chart_for = clean_symbol
-    st.session_state.render_chart_period = period 
+    # 🌟 修改：改用陣列 (List) 來儲存所有要求畫圖的股票
+    if "render_chart_queue" not in st.session_state:
+        st.session_state.render_chart_queue = []
+        
+    # 將這次的要求加入佇列
+    st.session_state.render_chart_queue.append({
+        "symbol": clean_symbol,
+        "period": period
+    }) 
     
-    print(f"🛠️ [Tool Called] 呼叫 show_stock_chart | 渲染: {clean_symbol}, 期間: {period}")
+    print(f"🛠️ [Tool Called] 加入繪圖佇列 | 渲染: {clean_symbol}, 期間: {period}")
     
     return {
         "status": "success", 
-        "message": f"已成功觸發網頁前端繪製 {clean_symbol} 的 {period} K 線圖。"
+        "message": f"已將 {clean_symbol} 加入前端繪圖佇列。"
     }
-
+    
 # ---------------------------------------------------------
 #  影片內容分析 Tool
 # ---------------------------------------------------------
@@ -739,9 +748,24 @@ for msg in st.session_state.messages:
         
         # 如果這筆訊息帶有圖表資料，就把它還原並畫出來！
         if msg.get("chart_json"):
+            import json
             try:
-                fig = pio.from_json(msg["chart_json"])
-                st.plotly_chart(fig, use_container_width=True)
+                # 嘗試解析為陣列
+                try:
+                    parsed_json = json.loads(msg["chart_json"])
+                except:
+                    # 相容極早期的舊資料寫法
+                    parsed_json = msg["chart_json"]
+
+                # 如果是新版的清單陣列 (多張圖)
+                if isinstance(parsed_json, list):
+                    for c_json in parsed_json:
+                        fig = pio.from_json(c_json)
+                        st.plotly_chart(fig, use_container_width=True)
+                # 為了相容你以前存的舊資料 (單張圖)
+                else:
+                    fig = pio.from_json(msg["chart_json"])
+                    st.plotly_chart(fig, use_container_width=True)
             except Exception as e:
                 st.error("圖表還原失敗")
 
@@ -867,68 +891,69 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                     except: 
                         pass
 
-# 檢查 AI 是否有觸發畫圖指令
-if "render_chart_for" in st.session_state and st.session_state.render_chart_for:
-    chart_symbol = st.session_state.render_chart_for
-    # 讀取 AI 決定的時間長度，如果沒給就預設 6mo
-    chart_period = st.session_state.get("render_chart_period", "6mo") 
+# 檢查 AI 是否有觸發畫圖指令 (改檢查佇列)
+if "render_chart_queue" in st.session_state and st.session_state.render_chart_queue:
+    import json
+    saved_chart_jsons = [] # 用來收集所有圖表的 JSON 準備存檔
     
     st.markdown("---") 
-    st.subheader(f"📊 {chart_symbol} K 線圖 (期間: {chart_period})")
     
-    try:
-        # 這裡把寫死的 "6mo" 換成動態變數 chart_period
-        df = yf.download(chart_symbol, period=chart_period, progress=False)
-
-        # 如果抓不到資料，且代碼是 .TW 結尾，自動切換成 .TWO (上櫃) 再抓一次
-        if df.empty and chart_symbol.endswith(".TW"):
-            chart_symbol = chart_symbol.replace(".TW", ".TWO")
+    # 用 for 迴圈把佇列裡面的股票全部畫出來
+    for chart_req in st.session_state.render_chart_queue:
+        chart_symbol = chart_req["symbol"]
+        chart_period = chart_req["period"]
+        
+        st.subheader(f"📊 {chart_symbol} K 線圖 (期間: {chart_period})")
+        
+        try:
             df = yf.download(chart_symbol, period=chart_period, progress=False)
-        
-        if not df.empty:
-            fig = go.Figure(data=[go.Candlestick(
-                x=df.index,
-                open=df['Open'].squeeze(),
-                high=df['High'].squeeze(),
-                low=df['Low'].squeeze(),
-                close=df['Close'].squeeze(),
-                name=chart_symbol
-            )])
-            
-            fig.update_layout(
-                xaxis_rangeslider_visible=False, 
-                template="plotly_dark",          
-                margin=dict(l=20, r=20, t=20, b=20),
-                height=500
-            )
-            st.plotly_chart(fig, use_container_width=True)
 
-            ########### 將圖表轉json存入DB中 ##########
-            # 1. 轉成 JSON 字串
-            fig_json = fig.to_json()
+            if df.empty and chart_symbol.endswith(".TW"):
+                chart_symbol = chart_symbol.replace(".TW", ".TWO")
+                df = yf.download(chart_symbol, period=chart_period, progress=False)
             
-            # 2. 顯示在畫面上
-            # st.plotly_chart(fig)
+            if not df.empty:
+                fig = go.Figure(data=[go.Candlestick(
+                    x=df.index,
+                    open=df['Open'].squeeze(),
+                    high=df['High'].squeeze(),
+                    low=df['Low'].squeeze(),
+                    close=df['Close'].squeeze(),
+                    name=chart_symbol
+                )])
+                
+                fig.update_layout(
+                    xaxis_rangeslider_visible=False, 
+                    template="plotly_dark",          
+                    margin=dict(l=20, r=20, t=20, b=20),
+                    height=500
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                # 收集這張圖的 JSON
+                saved_chart_jsons.append(fig.to_json())
+                
+            else:
+                st.warning(f"無法獲取 {chart_symbol} 在 {chart_period} 期間的歷史資料。")
+                
+        except Exception as e:
+            st.error(f"繪製 {chart_symbol} 時發生錯誤：{str(e)}")
             
-            # 3. 將圖表 JSON 一併存入記憶與資料庫 (取代原本只存 content 的寫法)
-            st.session_state.messages.append({
-                "role": "assistant", 
-                "content": final_text, 
-                "chart_json": fig_json  # <--- 把圖表掛在對話字典裡
-            })
-            save_chat_message(
-                st.session_state.current_session_id, 
-                "assistant", 
-                final_text, 
-                fig_json                # <--- 存進 Supabase
-            )
-            
-        else:
-            st.warning(f"無法獲取 {chart_symbol} 在 {chart_period} 期間的歷史資料。")
-            
-    except Exception as e:
-        st.error(f"繪製圖表時發生錯誤：{str(e)}")
+    # 將所有圖表的 JSON 陣列轉成字串，一次存入資料庫
+    if saved_chart_jsons:
+        final_json_str = json.dumps(saved_chart_jsons)
         
-    # 畫完圖後清除暫存
-    st.session_state.render_chart_for = None
-    st.session_state.render_chart_period = None
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "content": final_text if 'final_text' in locals() else "為您繪製圖表如下：", 
+            "chart_json": final_json_str
+        })
+        save_chat_message(
+            st.session_state.current_session_id, 
+            "assistant", 
+            final_text if 'final_text' in locals() else "為您繪製圖表如下：", 
+            final_json_str
+        )
+        
+    # 畫完圖後，清空佇列歸零
+    st.session_state.render_chart_queue = []
