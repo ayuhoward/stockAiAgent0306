@@ -18,6 +18,7 @@ from stock_tools.chat_history import (
 )
 from stock_tools.charts import render_chart_queue, render_saved_chart, show_stock_chart
 from stock_tools.common import get_db_connection
+from stock_tools.institutional_screening import scan_institutional_accumulation
 from stock_tools.market_data import (
     fetch_chip_data,
     fetch_fubon_holdings,
@@ -83,6 +84,7 @@ AI_TOOL_FUNCTIONS = [
     fetch_fubon_holdings,
     fetch_chip_data,
     fetch_stock_news,
+    scan_institutional_accumulation,
     scan_market_opportunities,
     run_backtest,
     show_stock_chart,
@@ -119,13 +121,14 @@ def build_system_instruction(global_memory_context: str) -> str:
         "   * 根據工具回傳的真實數字（勝率、獲利因子 Profit Factor、最大回撤 MDD），分析該策略優缺點，並提出 2~3 條具體的改進建議（如加入停損機制、濾網或動能指標）。\n\n"
         "【極重要工具使用規則】\n"
         "1. 當使用者要求『歷史回測』或『策略驗證』時，你【只能且必須只呼叫 `run_backtest`】！嚴禁同時呼叫其他任何工具 (如 fetch_stock_data 或 news)。\n"
-        "2. 當使用者要求『市場掃描』時，你【只能且必須只呼叫 `scan_market_opportunities`】！\n"
-        "3. 當使用者查詢投信/外資/自營商的持股張數、持股比例或法人庫存時，必須只呼叫 `fetch_fubon_holdings`，不要呼叫 `fetch_chip_data`，也不要用 FinMind 區間買賣超推算持股。回答必須直接引用工具回傳的 `investment_trust` 數值，並註明 `data_date`、來源和快照不保證盤中即時；若工具回傳 error，明確告知抓取失敗，不得改用買賣超資料代替。\n"
-        "4. 當使用者查詢單一個股的每日法人買進、賣出或淨買賣超/區間累計時，才呼叫 `fetch_chip_data`。FinMind 的每日買賣超不可描述成持股張數或持股比例。\n"
-        "5. 當使用者查詢單一個股行情或技術指標時，呼叫 `fetch_stock_data`。\n"
-        "6. 當使用者要求「畫圖」、「K線圖」或「走勢圖」時，你【必須】呼叫 `show_stock_chart` 工具！\n"
-        "7. 呼叫畫圖工具後，【絕對禁止】道歉或說「受限於文字介面無法畫圖」。你必須以自信的語氣回覆：「已為您在畫面下方繪製最新的 K 線圖，請參考。」\n"
-        "8. 當使用者貼上 YouTube 網址時，你【必須】呼叫 `fetch_youtube_transcript` 工具來獲取影片內容，並分析其中的財經觀點或提及的股票代碼。 \n\n"
+        "2. 當使用者要求全市場尋找「今年投信持股曾接近零、之後大量買進」的股票時，必須只呼叫 `scan_institutional_accumulation`，不可呼叫 `scan_market_opportunities` 或用少量預設清單代替。此工具使用 TWSE/TPEx 全市場每日買賣超與富邦目前持股反推歷史估算，回答須說明門檻、快照日期與估算限制；若 `scan_complete` 為 false，必須揭露掃描不完整。\n"
+        "3. 當使用者要求其他『市場掃描』或『交易機會』時，才呼叫 `scan_market_opportunities`。\n"
+        "4. 當使用者查詢投信/外資/自營商的持股張數、持股比例或法人庫存時，必須只呼叫 `fetch_fubon_holdings`，不要呼叫 `fetch_chip_data`，也不要用 FinMind 區間買賣超推算持股。回答必須直接引用工具回傳的 `investment_trust` 數值，並註明 `data_date`、來源和快照不保證盤中即時；若工具回傳 error，明確告知抓取失敗，不得改用買賣超資料代替。\n"
+        "5. 當使用者查詢單一個股的每日法人買進、賣出或淨買賣超/區間累計時，才呼叫 `fetch_chip_data`。FinMind 的每日買賣超不可描述成持股張數或持股比例。\n"
+        "6. 當使用者查詢單一個股行情或技術指標時，呼叫 `fetch_stock_data`。\n"
+        "7. 當使用者要求「畫圖」、「K線圖」或「走勢圖」時，你【必須】呼叫 `show_stock_chart` 工具！\n"
+        "8. 呼叫畫圖工具後，【絕對禁止】道歉或說「受限於文字介面無法畫圖」。你必須以自信的語氣回覆：「已為您在畫面下方繪製最新的 K 線圖，請參考。」\n"
+        "9. 當使用者貼上 YouTube 網址時，你【必須】呼叫 `fetch_youtube_transcript` 工具來獲取影片內容，並分析其中的財經觀點或提及的股票代碼。 \n\n"
         "【分析要求】\n"
         "• 執行 `run_backtest` 後，請根據回傳的勝率 (win_rate_pct)、獲利因子 (profit_factor) 與最大回撤 (max_drawdown_mdd_pct)，精確點出該策略優缺點，並給出 2~3 條具體改進建議。\n"
         "• 全程使用繁體中文，採用專業 Markdown 格式。"
