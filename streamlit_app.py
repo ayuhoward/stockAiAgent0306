@@ -118,7 +118,7 @@ def build_system_instruction(global_memory_context: str) -> str:
         "【極重要工具使用規則】\n"
         "1. 當使用者要求『歷史回測』或『策略驗證』時，你【只能且必須只呼叫 `run_backtest`】！嚴禁同時呼叫其他任何工具 (如 fetch_stock_data 或 news)。\n"
         "2. 當使用者要求『市場掃描』時，你【只能且必須只呼叫 `scan_market_opportunities`】！\n"
-        "3. 當使用者查詢『單一個股行情』時，才呼叫 `fetch_stock_data` 或 `fetch_chip_data`。\n"
+        "3. 當使用者查詢『單一個股行情』時，才呼叫 `fetch_stock_data` 或 `fetch_chip_data`。`fetch_chip_data` 的富邦頁面資料是持股張數與比例快照，回答時須附來源日期且不得保證盤中即時；FinMind 資料是每日買賣超，兩者不可混為一談。\n"
         "4. 當使用者要求「畫圖」、「K線圖」或「走勢圖」時，你【必須】呼叫 `show_stock_chart` 工具！\n"
         "5. 呼叫畫圖工具後，【絕對禁止】道歉或說「受限於文字介面無法畫圖」。你必須以自信的語氣回覆：「已為您在畫面下方繪製最新的 K 線圖，請參考。」\n"
         "6. 當使用者貼上 YouTube 網址時，你【必須】呼叫 `fetch_youtube_transcript` 工具來獲取影片內容，並分析其中的財經觀點或提及的股票代碼。 \n\n"
