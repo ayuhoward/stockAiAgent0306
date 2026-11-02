@@ -453,32 +453,57 @@ def fetch_stock_data(symbol: str, interval: str = "1d", period: str = "1y") -> d
     except Exception as e:
         return {"error": f"抓取技術面數據時發生錯誤: {str(e)}"}
         
-def fetch_chip_data(symbol: str) -> dict:
-    """獲取台股的三大法人買賣超數據。"""
+def fetch_chip_data(symbol: str, start_date: str = None) -> dict:
+    """
+    獲取台股的三大法人買賣超數據 (單位: 張)。
+    Args:
+        symbol: 股票代碼 (如 2330)
+        start_date: 統計起始日期 (格式 YYYY-MM-DD)。
+                    - 若未提供，預設僅抓取「最新一個交易日」的資料。
+                    - 若查詢「今年累計」或特定區間累計，請帶入對應的起始日期 (例如 '2026-01-01')。
+    """
+    print(f"🛠️ [Tool Called] 呼叫 fetch_chip_data | 參數: symbol={symbol}, start_date={start_date}")
+    
     clean_symbol = symbol.strip().upper().replace(".TW", "").replace(".TWO", "")
     if not clean_symbol.isdigit():
         return {"error": "籌碼數據僅支援台灣股市 (例如 2330, 0050)"}
 
     today = datetime.date.today()
-    start_date = (today - datetime.timedelta(days=10)).strftime("%Y-%m-%d")
+    # 如果沒有指定 start_date，預設往前抓 10 天以確保能找到最近一個交易日
+    query_start = start_date if start_date else (today - datetime.timedelta(days=10)).strftime("%Y-%m-%d")
+    
     url = "https://api.finmindtrade.com/api/v4/data"
     result = {"symbol": clean_symbol, "institutional": {}, "major_holders": {}}
 
     try:
-        params_inst = {"dataset": "TaiwanStockInstitutionalInvestorsBuySell", "data_id": clean_symbol, "start_date": start_date}
+        params_inst = {
+            "dataset": "TaiwanStockInstitutionalInvestorsBuySell", 
+            "data_id": clean_symbol, 
+            "start_date": query_start
+        }
         res_inst = requests.get(url, params=params_inst, timeout=5).json()
 
         if res_inst.get("data"):
-            latest_date = res_inst["data"][-1]["date"]
-            day_data = [d for d in res_inst["data"] if d["date"] == latest_date]
+            # 核心切換：判斷要「單日」還是「區間累計」
+            if not start_date:
+                # 單日模式：保留您原本的邏輯，只抓陣列最後一天的日期
+                latest_date = res_inst["data"][-1]["date"]
+                target_data = [d for d in res_inst["data"] if d["date"] == latest_date]
+                period_label = latest_date
+            else:
+                # 區間模式：直接使用全部回傳資料進行加總
+                target_data = res_inst["data"]
+                end_date = res_inst["data"][-1]["date"]
+                period_label = f"{query_start} 至 {end_date} 累計"
+
             summary = {}
-            for item in day_data:
+            for item in target_data:
                 name = item["name"]
                 net_buy = (item["buy"] - item["sell"]) // 1000
                 summary[name] = summary.get(name, 0) + net_buy
 
             result["institutional"] = {
-                "date": latest_date,
+                "period": period_label,
                 "foreign_buy_share": summary.get("Foreign_Investor", 0),
                 "trust_buy_share": summary.get("Investment_Trust", 0),
                 "dealer_buy_share": summary.get("Dealer_Self", 0) + summary.get("Dealer_Hedging", 0)
@@ -486,7 +511,6 @@ def fetch_chip_data(symbol: str) -> dict:
         return result
     except Exception as e:
         return {"error": f"抓取籌碼數據時發生錯誤: {str(e)}"}
-
 
 def fetch_stock_news(symbol: str) -> dict:
     """抓取特定股票相關的最新 5 則焦點新聞。"""
