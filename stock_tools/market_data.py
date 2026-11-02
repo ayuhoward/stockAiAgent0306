@@ -129,6 +129,43 @@ def _fetch_fubon_chip_data(symbol: str) -> dict:
         }
 
 
+def fetch_fubon_holdings(symbol: str) -> dict:
+    """Fetch Fubon eBroker's latest institutional holdings snapshot for a Taiwan stock.
+
+    Must be used for questions about investment-trust holdings, holdings lots,
+    or ownership percentages. This is a holdings snapshot, not cumulative
+    FinMind trading flow.
+    """
+    clean_symbol = symbol.strip().upper().replace(".TW", "").replace(".TWO", "")
+    if not clean_symbol.isdigit():
+        return {"error": "富邦法人持股資料僅支援台灣股票代碼 (例如 2330, 0050)。"}
+
+    snapshot = _fetch_fubon_chip_data(clean_symbol)
+    if not snapshot["available"]:
+        return {
+            "error": f"無法取得富邦 {clean_symbol} 法人持股資料：{snapshot['error']}",
+            "source": snapshot["source"],
+            "source_url": snapshot["url"],
+        }
+
+    trust_holding = snapshot["positions"]["investment_trust"]
+    return {
+        "symbol": clean_symbol,
+        "source": snapshot["source"],
+        "data_type": "institutional_holdings_snapshot",
+        "data_date": snapshot["data_date"],
+        "unit": snapshot["unit"],
+        "investment_trust": trust_holding,
+        "other_institutional_holdings": {
+            name: position
+            for name, position in snapshot["positions"].items()
+            if name in {"directors_and_supervisors", "foreign_investor", "dealer"}
+        },
+        "source_url": snapshot["url"],
+        "note": snapshot["note"],
+    }
+
+
 def show_stock_chart(symbol: str, period: str = "6mo") -> dict:
     """
     當使用者要求畫 K 線圖、走勢圖時呼叫此工具。
