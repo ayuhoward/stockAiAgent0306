@@ -128,9 +128,12 @@ def build_system_instruction(global_memory_context: str) -> str:
 
 
 def count_request_tokens(history_messages: list, message_contents: list, system_instruction: str) -> int:
-    contents = [*build_gemini_history(history_messages), *message_contents]
+    contents = [
+        system_instruction,
+        *build_gemini_history(history_messages),
+        *message_contents,
+    ]
     config = types.CountTokensConfig(
-        system_instruction=system_instruction,
         tools=[types.Tool(function_declarations=AI_TOOL_DECLARATIONS)],
     )
     token_info = ai_client.models.count_tokens(model=AI_MODEL, contents=contents, config=config)
