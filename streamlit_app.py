@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import uuid
@@ -130,13 +131,14 @@ def build_system_instruction(global_memory_context: str) -> str:
 def count_request_tokens(history_messages: list, message_contents: list, system_instruction: str) -> int:
     contents = [
         system_instruction,
+        json.dumps(
+            [declaration.model_dump(exclude_none=True) for declaration in AI_TOOL_DECLARATIONS],
+            ensure_ascii=False,
+        ),
         *build_gemini_history(history_messages),
         *message_contents,
     ]
-    config = types.CountTokensConfig(
-        tools=[types.Tool(function_declarations=AI_TOOL_DECLARATIONS)],
-    )
-    token_info = ai_client.models.count_tokens(model=AI_MODEL, contents=contents, config=config)
+    token_info = ai_client.models.count_tokens(model=AI_MODEL, contents=contents)
     return token_info.total_tokens
 
 
