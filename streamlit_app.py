@@ -1,25 +1,30 @@
 import os
-import math
-import datetime
-import urllib.parse
-import requests
-import feedparser
-import yfinance as yf
-import pandas as pd
-import pandas_ta as ta
-import plotly.graph_objects as go
-import plotly.io as pio
-import psycopg2
-import streamlit as st
-import subprocess
 import tempfile
 import uuid
-import vectorbt as vbt
-import yt_dlp
+
+import streamlit as st
 from google import genai
 from google.genai import types
-from openai import OpenAI
-from youtube_transcript_api import YouTubeTranscriptApi
+
+from stock_tools.chat_history import (
+    delete_session,
+    get_all_sessions,
+    initialize_chat_history_tables,
+    load_chat_history,
+    load_global_memory,
+    save_chat_message,
+    update_global_memory,
+)
+from stock_tools.charts import render_chart_queue, render_saved_chart, show_stock_chart
+from stock_tools.common import get_db_connection
+from stock_tools.market_data import (
+    fetch_chip_data,
+    fetch_stock_data,
+    fetch_stock_news,
+)
+from stock_tools.portfolio import get_portfolio_summary, record_trade
+from stock_tools.strategies import run_backtest, scan_market_opportunities
+from stock_tools.youtube_tools import fetch_youtube_transcript
 
 # ---------------------------------------------------------
 # 1. 網頁基本設定與資安防護
@@ -41,16 +46,12 @@ if not st.session_state.authenticated:
     st.stop()
 
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-SUPABASE_URL = st.secrets["SUPABASE_DB_URL"]
 AI_MODEL = "gemini-3.5-flash-lite"
 MAX_TOKENS_LIMIT = 50000  # Token 安全上限設定
 
 # ---------------------------------------------------------
 # 2. 資料庫初始化 (新增聊天紀錄與全域記憶表)
 # ---------------------------------------------------------
-def get_db_connection():
-    return psycopg2.connect(SUPABASE_URL)
-
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -59,36 +60,7 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS positions (symbol TEXT PRIMARY KEY, shares REAL NOT NULL, avg_cost REAL NOT NULL, updated_at TEXT NOT NULL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS trade_logs (id SERIAL PRIMARY KEY, symbol TEXT NOT NULL, action TEXT NOT NULL, shares REAL NOT NULL, price REAL NOT NULL, trade_date TEXT NOT NULL, notes TEXT)''')
     
-    # 聊天紀錄表 (多 Session)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS chat_history (
-            id SERIAL PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # 全域記憶表 (跨 Session 互通的長期摘要)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS global_memory (
-            id SERIAL PRIMARY KEY,
-            summary_text TEXT NOT NULL,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-
-    # chart_json欄位，用來存 Plotly 圖表的 JSON
-    cursor.execute('''
-        ALTER TABLE chat_history 
-        ADD COLUMN IF NOT EXISTS chart_json TEXT
-    ''')
-    
-    # 若全域記憶為空，插入預設值
-    cursor.execute("SELECT COUNT(*) FROM global_memory")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute("INSERT INTO global_memory (summary_text) VALUES ('目前尚無特殊全域記憶設定。')")
+    initialize_chat_history_tables(cursor)
         
     conn.commit()
     cursor.close()
@@ -96,564 +68,9 @@ def init_db():
 
 init_db()
 
-def normalize_symbol(symbol: str) -> str:
-    clean_symbol = symbol.strip().upper()
-    if clean_symbol.isdigit():
-        clean_symbol += ".TW"
-    elif not clean_symbol.endswith(".TW") and not clean_symbol.endswith(".TWO") and not clean_symbol.isalpha():
-        clean_symbol += ".TW"
-    return clean_symbol
-
-# ---------------------------------------------------------
-# 3. Session & 記憶管理 DB 操作
-# ---------------------------------------------------------
-def save_chat_message(session_id: str, role: str, content: str, chart_json: str = None):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute(
-        "INSERT INTO chat_history (session_id, role, content, chart_json) VALUES (%s, %s, %s, %s)",
-        (session_id, role, content, chart_json)
-    )
-    
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-def load_chat_history(session_id: str):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT role, content, chart_json FROM chat_history WHERE session_id = %s ORDER BY id ASC",
-        (session_id,)
-    )    
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    # 將撈出來的資料打包成 Streamlit 看得懂的 dict
-    return [{"role": row[0], "content": row[1], "chart_json": row[2]} for row in rows]
-
-def get_all_sessions():
-    """撈取所有歷史對話，確保每個 session_id 唯一，並取第一句話當作標題"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # 按照時間由舊到新撈出所有使用者的對話
-    cursor.execute("SELECT session_id, content, created_at FROM chat_history WHERE role = 'user' ORDER BY created_at ASC")
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    
-    # 利用 Python 字典過濾，確保同一個 session_id 只保留最一開始的那句話
-    session_dict = {}
-    for row in rows:
-        sid = row[0]
-        content = row[1]
-        if sid not in session_dict:
-            session_dict[sid] = content
-            
-    # 將結果轉換為串列，並反轉順序 (最新的對話排在側邊欄最上面)
-    result = []
-    for sid, content in reversed(list(session_dict.items())):
-        result.append({
-            "session_id": sid, 
-            "title": content[:15] + "..." if len(content) > 15 else content
-        })
-        
-    return result
-    
-def delete_session(session_id: str):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM chat_history WHERE session_id = %s", (session_id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-def load_global_memory():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT summary_text FROM global_memory ORDER BY id DESC LIMIT 1")
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    return row[0] if row else "目前尚無特殊全域記憶設定。"
-
-def update_global_memory(new_summary: str):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    # 這裡採直接覆寫最新一筆的方式
-    cursor.execute("UPDATE global_memory SET summary_text = %s, updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT id FROM global_memory ORDER BY id DESC LIMIT 1)", (new_summary,))
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-# ---------------------------------------------------------
-# 畫視覺畫圖形 Tool
 # ---------------------------------------------------------
 # ---------------------------------------------------------
-# 畫視覺畫圖形 Tool
-# ---------------------------------------------------------
-def show_stock_chart(symbol: str, period: str = "6mo") -> dict:
-    """
-    當使用者要求畫 K 線圖、走勢圖時呼叫此工具。
-    Args:
-        symbol: 股票代碼 (例如 '2330', 'AAPL')
-        period: 資料長度。有效值必須為: '1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max'。預設為 '6mo'。
-    """
-    clean_symbol = normalize_symbol(symbol)
-    
-    # 🌟 修改：改用陣列 (List) 來儲存所有要求畫圖的股票
-    if "render_chart_queue" not in st.session_state:
-        st.session_state.render_chart_queue = []
-        
-    # 將這次的要求加入佇列
-    st.session_state.render_chart_queue.append({
-        "symbol": clean_symbol,
-        "period": period
-    }) 
-    
-    print(f"🛠️ [Tool Called] 加入繪圖佇列 | 渲染: {clean_symbol}, 期間: {period}")
-    
-    return {
-        "status": "success", 
-        "message": f"已將 {clean_symbol} 加入前端繪圖佇列。"
-    }
-    
-# ---------------------------------------------------------
-#  影片內容分析 Tool
-# ---------------------------------------------------------
-def fetch_youtube_transcript(url: str) -> dict:
-    """
-    獲取 YouTube 影片字幕。
-    具備 CC 字幕秒抓機制，與超過 24MB 大檔案音軌自動切割 (ffmpeg) 轉 Whisper API 的雙層備援防呆。
-    """
-    # 1. 解析 Video ID
-    video_id = None
-    if "v=" in url:
-        video_id = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("v", [None])[0]
-    elif "youtu.be/" in url:
-        video_id = url.split("youtu.be/")[1].split("?")[0]
-        
-    if not video_id:
-        return {"error": "無法解析 YouTube 影片 ID，請確認網址格式。"}
-
-    # 2. 優先嘗試官方 CC 字幕
-    try:
-        transcript = YouTubeTranscriptApi.get_transcript(
-            video_id, 
-            languages=['zh-TW', 'zh-Hant', 'zh-Hans', 'zh-CN', 'en']
-        )
-        full_text = " ".join([t['text'] for t in transcript])
-        return {
-            "status": "success", 
-            "method": "cc_subtitle",
-            "message": "成功取得官方 CC 字幕", 
-            "transcript_summary": full_text
-        }
-    except Exception:
-        pass # 找不到官方字幕，默默進入下方 Whisper 備援
-        
-    # 3. 備援機制：下載音軌並依據大小決定是否切割
-    try:
-        openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-        
-        with tempfile.TemporaryDirectory() as tmpdir:
-            audio_path = os.path.join(tmpdir, 'audio.m4a')
-            
-            # 僅下載 m4a 音軌
-            ydl_opts = {
-                'format': 'm4a/bestaudio/best',
-                'outtmpl': audio_path,
-                'quiet': True,
-                'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'm4a'}]
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-            
-            file_size = os.path.getsize(audio_path)
-            max_size = 24 * 1024 * 1024 # 設定安全閥值為 24MB
-            full_transcript = ""
-
-            if file_size > max_size:
-                # 檔案過大，呼叫系統層級的 ffmpeg 無損切割 (每 600 秒 = 10 分鐘切一軌)
-                segment_pattern = os.path.join(tmpdir, "chunk_%03d.m4a")
-                subprocess.run([
-                    "ffmpeg", "-i", audio_path,
-                    "-f", "segment", "-segment_time", "600",
-                    "-c", "copy", segment_pattern
-                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                
-                # 找出所有切割後的檔案並排序
-                chunk_files = sorted([f for f in os.listdir(tmpdir) if f.startswith("chunk_") and f.endswith(".m4a")])
-
-                for chunk_file in chunk_files:
-                    chunk_path = os.path.join(tmpdir, chunk_file)
-                    with open(chunk_path, "rb") as audio_file:
-                        res = openai_client.audio.transcriptions.create(
-                            model="whisper-1", 
-                            file=audio_file,
-                            response_format="text"
-                        )
-                        full_transcript += res + " "
-            else:
-                # 檔案小於 24MB，直接送入 Whisper
-                with open(audio_path, "rb") as audio_file:
-                    full_transcript = openai_client.audio.transcriptions.create(
-                        model="whisper-1", 
-                        file=audio_file,
-                        response_format="text"
-                    )
-
-            return {
-                "status": "success",
-                "method": "whisper_api_split" if file_size > max_size else "whisper_api",
-                "message": "成功透過 Whisper 取回完整逐字稿",
-                "transcript_summary": full_transcript.strip()
-            }
-    except Exception as e:
-        return {"error": f"無法獲取字幕且音軌辨識失敗: {str(e)}"}
-
-# ---------------------------------------------------------
-# 4. 財務與量化 Tools
-# ---------------------------------------------------------
-def record_trade(symbol: str, action: str, shares: float, price: float, notes: str = "") -> dict:
-    # 移除自動市價，強制要求價格，避免 AI 產生幻覺重覆買進
-    clean_symbol = normalize_symbol(symbol)
-    action = action.upper()
-    if action not in ['BUY', 'SELL']: return {"error": "交易動作必須為 BUY 或 SELL"}
-    if price is None or price <= 0: return {"error": "請告知使用者必須提供具體的成交價格。"}
-
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO trade_logs (symbol, action, shares, price, trade_date, notes) VALUES (%s, %s, %s, %s, %s, %s)", (clean_symbol, action, shares, price, now_str, notes))
-        cursor.execute("SELECT shares, avg_cost FROM positions WHERE symbol = %s", (clean_symbol,))
-        pos = cursor.fetchone()
-        
-        if action == "BUY":
-            if pos:
-                new_shares = pos[0] + shares
-                new_cost = ((pos[0] * pos[1]) + (shares * price)) / new_shares
-                cursor.execute("UPDATE positions SET shares = %s, avg_cost = %s, updated_at = %s WHERE symbol = %s", (new_shares, round(new_cost, 2), now_str, clean_symbol))
-            else:
-                cursor.execute("INSERT INTO positions (symbol, shares, avg_cost, updated_at) VALUES (%s, %s, %s, %s)", (clean_symbol, shares, price, now_str))
-        elif action == "SELL":
-            if not pos: return {"error": "無持股紀錄"}
-            if shares >= pos[0]:
-                cursor.execute("DELETE FROM positions WHERE symbol = %s", (clean_symbol,))
-            else:
-                cursor.execute("UPDATE positions SET shares = %s, updated_at = %s WHERE symbol = %s", (pos[0] - shares, now_str, clean_symbol))
-        conn.commit()
-        return {"status": "success", "message": f"成功紀錄 {action} {clean_symbol} {shares} 股"}
-    except Exception as e:
-        return {"error": str(e)}
-    finally:
-        cursor.close()
-        conn.close()
-
-def get_portfolio_summary() -> dict:
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT symbol, shares, avg_cost FROM positions")
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    if not rows: return {"portfolio": [], "message": "目前無持股"}
-        
-    portfolio = []
-    total_cost = total_market_val = 0.0
-    for symbol, shares, avg_cost in rows:
-        cost_val = shares * avg_cost
-        total_cost += cost_val
-        curr_price = avg_cost
-        try:
-            hist = yf.Ticker(symbol).history(period="1d")
-            if not hist.empty: curr_price = round(float(hist['Close'].iloc[-1]), 2)
-        except: pass
-        mkt_val = shares * curr_price
-        total_market_val += mkt_val
-        portfolio.append({"symbol": symbol, "shares": shares, "avg_cost": avg_cost, "current_price": curr_price, "unrealized_pnl": round(mkt_val - cost_val, 2)})
-    return {"summary": {"total_cost": round(total_cost, 2), "total_unrealized_pnl": round(total_market_val - total_cost, 2)}, "portfolio": portfolio}
-
-def fetch_stock_data(symbol: str, interval: str = "1d", period: str = "1y") -> dict:
-    """
-    獲取股票的歷史數據與技術指標。
-    - 支援相對時間 period: "1y", "6mo", "1mo"
-    - 也支援絕對日期 start_date 與 end_date: 格式為 "YYYY-MM-DD" (例如 "2026-09-01")
-    若有提供 start_date，將優先使用精確日期區間。
-    """
-    clean_symbol = normalize_symbol(symbol)
-    try:
-        ticker = yf.Ticker(clean_symbol)
-        
-        # 核心修改：判斷是否有傳入指定日期
-        if start_date:
-            # 若沒有提供 end_date，yfinance 預設會抓到今天
-            df = ticker.history(start=start_date, end=end_date, interval=interval)
-        else:
-            # 防呆機制：yfinance 的分 K 資料 (含有 m) 最多只能抓最近 60 天
-            if "m" in interval and period in ["1y", "2y", "max", "ytd"]:
-                period = "60d"
-            df = ticker.history(period=period, interval=interval)
-        
-        # 處理上櫃股票後綴
-        if df.empty and clean_symbol.endswith(".TW"):
-            clean_symbol = clean_symbol.replace(".TW", ".TWO")
-            ticker = yf.Ticker(clean_symbol)
-            if start_date:
-                df = ticker.history(start=start_date, end=end_date, interval=interval)
-            else:
-                df = ticker.history(period=period, interval=interval)
-                
-        if df.empty:
-            return {"error": f"找不到 {symbol} 的數據，請確認日期區間內是否有交易日。"}
-
-        # 計算技術指標 (均線、RSI)
-        df.ta.sma(length=5, append=True)
-        df.ta.sma(length=20, append=True)
-        df.ta.sma(length=60, append=True)
-        df.ta.rsi(length=14, append=True)
-
-        # 新增：計算 KD 指標 (Stochastic Oscillator)
-        # k=9, d=3, smooth_k=3 是一般台股看盤軟體常用的 933 參數
-        kd = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3, smooth_k=3)
-        if kd is not None and not kd.empty:
-            df = pd.concat([df, kd], axis=1)
-
-        latest_d = df.iloc[-1]
-        prev_d = df.iloc[-2] if len(df) > 1 else latest_d
-
-        # 漲跌幅
-        change_pct = ((latest_d['Close'] - prev_d['Close']) / prev_d['Close']) * 100
-
-        # 安全取值函式，避免 NaN 報錯
-        def safe_get(key):
-            val = latest_d.get(key)
-            return round(float(val), 2) if pd.notna(val) else "N/A"
-
-        return {
-            "symbol": clean_symbol,
-            "data_interval": interval,  # 讓 AI 確認它目前拿到的是什麼層級的資料
-            "latest_time": str(df.index[-1]),
-            "close_price": round(float(latest_d['Close']), 2),
-            "change_percent": f"{round(float(change_pct), 2)}%",
-            "moving_averages": {
-                "sma5": safe_get('SMA_5'),
-                "sma20": safe_get('SMA_20'),
-                "sma60": safe_get('SMA_60'),
-            },
-            "momentum_indicators": {
-                "rsi_14": safe_get('RSI_14'),
-                "kd_k9": safe_get('STOCHk_9_3_3'),  # KD 的 K 值
-                "kd_d3": safe_get('STOCHd_9_3_3')   # KD 的 D 值
-            }
-        }
-    except Exception as e:
-        return {"error": f"抓取技術面數據時發生錯誤: {str(e)}"}
-        
-def fetch_chip_data(symbol: str, start_date: str = None) -> dict:
-    """
-    獲取台股的三大法人買賣超數據 (單位: 張)。
-    Args:
-        symbol: 股票代碼 (如 2330)
-        start_date: 統計起始日期 (格式 YYYY-MM-DD)。
-                    - 若未提供，預設僅抓取「最新一個交易日」的資料。
-                    - 若查詢「今年累計」或特定區間累計，請帶入對應的起始日期 (例如 '2026-01-01')。
-    """
-    print(f"🛠️ [Tool Called] 呼叫 fetch_chip_data | 參數: symbol={symbol}, start_date={start_date}")
-    
-    clean_symbol = symbol.strip().upper().replace(".TW", "").replace(".TWO", "")
-    if not clean_symbol.isdigit():
-        return {"error": "籌碼數據僅支援台灣股市 (例如 2330, 0050)"}
-
-    today = datetime.date.today()
-    # 如果沒有指定 start_date，預設往前抓 10 天以確保能找到最近一個交易日
-    query_start = start_date if start_date else (today - datetime.timedelta(days=10)).strftime("%Y-%m-%d")
-    
-    url = "https://api.finmindtrade.com/api/v4/data"
-    result = {"symbol": clean_symbol, "institutional": {}, "major_holders": {}}
-
-    try:
-        params_inst = {
-            "dataset": "TaiwanStockInstitutionalInvestorsBuySell", 
-            "data_id": clean_symbol, 
-            "start_date": query_start
-        }
-        res_inst = requests.get(url, params=params_inst, timeout=5).json()
-
-        if res_inst.get("data"):
-            # 核心切換：判斷要「單日」還是「區間累計」
-            if not start_date:
-                # 單日模式：保留您原本的邏輯，只抓陣列最後一天的日期
-                latest_date = res_inst["data"][-1]["date"]
-                target_data = [d for d in res_inst["data"] if d["date"] == latest_date]
-                period_label = latest_date
-            else:
-                # 區間模式：直接使用全部回傳資料進行加總
-                target_data = res_inst["data"]
-                end_date = res_inst["data"][-1]["date"]
-                period_label = f"{query_start} 至 {end_date} 累計"
-
-            summary = {}
-            for item in target_data:
-                name = item["name"]
-                net_buy = (item["buy"] - item["sell"]) // 1000
-                summary[name] = summary.get(name, 0) + net_buy
-
-            result["institutional"] = {
-                "period": period_label,
-                "foreign_buy_share": summary.get("Foreign_Investor", 0),
-                "trust_buy_share": summary.get("Investment_Trust", 0),
-                "dealer_buy_share": summary.get("Dealer_Self", 0) + summary.get("Dealer_Hedging", 0)
-            }
-        return result
-    except Exception as e:
-        return {"error": f"抓取籌碼數據時發生錯誤: {str(e)}"}
-
-def fetch_stock_news(symbol: str) -> dict:
-    """抓取特定股票相關的最新 5 則焦點新聞。"""
-    clean_symbol = symbol.strip().upper().replace(".TW", "").replace(".TWO", "")
-    query = f"{clean_symbol} 股票"
-    encoded_query = urllib.parse.quote(query)
-    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-
-    try:
-        feed = feedparser.parse(rss_url)
-        news_items = [{"title": e.title, "published": getattr(e, 'published', 'N/A')} for e in feed.entries[:5]]
-        return {"symbol": clean_symbol, "news": news_items}
-    except Exception as e:
-        return {"error": f"抓取新聞時發生錯誤: {str(e)}"}
-
-def scan_market_opportunities(market: str = "TW", custom_symbols: list = None, strategy: str = "5m_kd") -> dict:
-    """
-    掃描選股池，尋找潛力標的。
-    - custom_symbols: 允許使用者指定股票代碼清單 (如 ["2330", "2303"])。未提供則使用預設名單。
-    - strategy: 支援 "5m_kd" (五分K+KD交叉短線策略) 與 "daily_rsi" (日線+RSI波段策略)。
-    """
-    if custom_symbols and isinstance(custom_symbols, list) and len(custom_symbols) > 0:
-        watch_list = [normalize_symbol(s) for s in custom_symbols]
-    else:
-        watch_list = ["2303.TW", "2481.TW", "5328.TW", "3264.TW", "3533.TW"] if market.upper() == "TW" else ["AAPL", "NVDA", "TSLA"]
-    
-    opportunities = []
-
-    for symbol in watch_list:
-        try:
-            if strategy == "5m_kd":
-                # 【短線策略】五分K戰法 + KD指標
-                df = yf.download(symbol, period="5d", interval="5m", progress=False)
-                if df.empty or len(df) < 30: continue
-                
-                close, high, low = df["Close"].squeeze(), df["High"].squeeze(), df["Low"].squeeze()
-                sma5, sma20 = ta.sma(close, length=5).iloc[-1], ta.sma(close, length=20).iloc[-1]
-                kd = ta.stoch(high, low, close, k=9, d=3, smooth_k=3)
-                
-                if kd is None or kd.empty: continue
-                k_val, d_val = kd["STOCHk_9_3_3"].iloc[-1], kd["STOCHd_9_3_3"].iloc[-1]
-                curr_price = float(close.iloc[-1])
-                
-                # 濾網條件：均線多頭且 KD 黃金交叉且未嚴重超買
-                if curr_price > sma20 and sma5 > sma20 and k_val > d_val and k_val < 80:
-                    opportunities.append({
-                        "symbol": symbol, "current_price": round(curr_price, 2),
-                        "sma5": round(float(sma5), 2), "sma20": round(float(sma20), 2),
-                        "k_value": round(float(k_val), 2), "d_value": round(float(d_val), 2)
-                    })
-                    
-            elif strategy == "daily_rsi":
-                # 【波段策略】日線 + RSI指標
-                df = yf.download(symbol, period="6mo", interval="1d", progress=False)
-                if df.empty or len(df) < 30: continue
-                
-                close = df["Close"].squeeze()
-                sma5, sma20 = ta.sma(close, length=5).iloc[-1], ta.sma(close, length=20).iloc[-1]
-                rsi14 = ta.rsi(close, length=14).iloc[-1]
-                curr_price = float(close.iloc[-1])
-                
-                # 濾網條件：均線多頭且 RSI 處於動能加溫區 (48~75)
-                if curr_price > sma20 and sma5 > sma20 and 48 <= rsi14 <= 75:
-                    opportunities.append({
-                        "symbol": symbol, "current_price": round(curr_price, 2),
-                        "sma5": round(float(sma5), 2), "sma20": round(float(sma20), 2),
-                        "rsi14": round(float(rsi14), 2)
-                    })
-        except Exception:
-            continue
-
-    return {"market": market, "strategy": strategy, "scanned_count": len(watch_list), "matched_count": len(opportunities), "candidates": opportunities}
-
-def run_backtest(symbol: str, strategy: str = "sma_cross", trailing_stop_pct: float = 0.08) -> dict:
-    """
-    執行量化回測。
-    - period 支援: "1mo", "3mo", "6mo", "1y", "2y", "max" 等。
-    注意：若 interval 為分K (如 5m)，period 強制最高只能設為 "60d"。
-    """
-    clean_symbol = normalize_symbol(symbol)
-    
-    # 防呆機制：yfinance 限制分K最多只能抓 60 天
-    if "m" in interval and period in ["1y", "2y", "max", "ytd", "5y", "10y"]:
-        period = "60d"
-    try:
-        # 下載資料時帶入動態的 period
-        df = yf.download(clean_symbol, period=period, interval=interval, progress=False)
-        if df.empty or "Close" not in df:
-            return {"error": f"找不到 {clean_symbol} 的歷史價格資料。"}
-
-        price = df["Close"].squeeze()
-        
-        # 產生進出場訊號
-        if strategy == "rsi_signal":
-            rsi = ta.rsi(price, length=14)
-            entries = rsi < 30
-            exits = rsi > 70
-        else:
-            fast_ma = ta.sma(price, length=5)
-            slow_ma = ta.sma(price, length=20)
-            entries = (fast_ma > slow_ma) & (fast_ma.shift(1) <= slow_ma.shift(1))
-            exits = (fast_ma < slow_ma) & (fast_ma.shift(1) >= slow_ma.shift(1))
-
-        # 核心升級：加入移動停損與手續費設定
-        portfolio = vbt.Portfolio.from_signals(
-            price, 
-            entries, 
-            exits, 
-            init_cash=100000, 
-            fees=0.001425,
-            sl_stop=trailing_stop_pct,  # 設定停損比例 (預設 0.08 代表 8%)
-            sl_trail=True               # 啟動移動停損，隨最高價動態上移出場線
-        )
-
-        def safe_float(val, multiplier=1.0, default=0.0):
-            try:
-                raw_val = float(val.iloc[0]) if isinstance(val, pd.Series) else float(val)
-                final_val = raw_val * multiplier
-                return default if (math.isnan(final_val) or math.isinf(final_val)) else round(final_val, 2)
-            except Exception:
-                return default
-
-        total_trades = int(portfolio.trades.count())
-        win_rate = safe_float(portfolio.trades.win_rate(), multiplier=100.0) if total_trades > 0 else 0.0
-        profit_factor = safe_float(portfolio.profit_factor()) if total_trades > 0 else 0.0
-        max_dd = safe_float(portfolio.max_drawdown(), multiplier=100.0)
-        total_return = safe_float(portfolio.total_return(), multiplier=100.0)
-
-        return {
-            "symbol": clean_symbol,
-            "strategy": strategy,
-            "trailing_stop_applied": f"{trailing_stop_pct * 100}%",
-            "total_trades": total_trades,
-            "win_rate_pct": f"{win_rate}%",
-            "profit_factor": profit_factor,
-            "max_drawdown_mdd_pct": f"{max_dd}%",
-            "total_return_pct": f"{total_return}%"
-        }
-    except Exception as e:
-        return {"error": f"執行量化回測時發生錯誤: {str(e)}"}
-
-# ---------------------------------------------------------
-# 5. Gemini 格式轉換與自動摘要工具
+# Gemini 格式轉換與自動摘要工具
 # ---------------------------------------------------------
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -683,7 +100,7 @@ def summarize_overflow(overflow_msgs: list, current_summary: str) -> str:
         return current_summary
 
 # ---------------------------------------------------------
-# 6. Streamlit 介面與主程式邏輯
+# Streamlit 介面與主程式邏輯
 # ---------------------------------------------------------
 # 1. 獨立定義載入對話的 Callback 邏輯
 def handle_load_session(session_id):
@@ -772,26 +189,7 @@ for msg in st.session_state.messages:
         
         # 如果這筆訊息帶有圖表資料，就把它還原並畫出來！
         if msg.get("chart_json"):
-            import json
-            try:
-                # 嘗試解析為陣列
-                try:
-                    parsed_json = json.loads(msg["chart_json"])
-                except:
-                    # 相容極早期的舊資料寫法
-                    parsed_json = msg["chart_json"]
-
-                # 如果是新版的清單陣列 (多張圖)
-                if isinstance(parsed_json, list):
-                    for c_json in parsed_json:
-                        fig = pio.from_json(c_json)
-                        st.plotly_chart(fig, use_container_width=True)
-                # 為了相容你以前存的舊資料 (單張圖)
-                else:
-                    fig = pio.from_json(msg["chart_json"])
-                    st.plotly_chart(fig, use_container_width=True)
-            except Exception as e:
-                st.error("圖表還原失敗")
+            render_saved_chart(msg["chart_json"])
 
 # === 處理新訊息 ===
 if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線圖，或買入 2481 強茂 1000股)"):
@@ -915,69 +313,4 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                     except: 
                         pass
 
-# 檢查 AI 是否有觸發畫圖指令 (改檢查佇列)
-if "render_chart_queue" in st.session_state and st.session_state.render_chart_queue:
-    import json
-    saved_chart_jsons = [] # 用來收集所有圖表的 JSON 準備存檔
-    
-    st.markdown("---") 
-    
-    # 用 for 迴圈把佇列裡面的股票全部畫出來
-    for chart_req in st.session_state.render_chart_queue:
-        chart_symbol = chart_req["symbol"]
-        chart_period = chart_req["period"]
-        
-        st.subheader(f"📊 {chart_symbol} K 線圖 (期間: {chart_period})")
-        
-        try:
-            df = yf.download(chart_symbol, period=chart_period, progress=False)
-
-            if df.empty and chart_symbol.endswith(".TW"):
-                chart_symbol = chart_symbol.replace(".TW", ".TWO")
-                df = yf.download(chart_symbol, period=chart_period, progress=False)
-            
-            if not df.empty:
-                fig = go.Figure(data=[go.Candlestick(
-                    x=df.index,
-                    open=df['Open'].squeeze(),
-                    high=df['High'].squeeze(),
-                    low=df['Low'].squeeze(),
-                    close=df['Close'].squeeze(),
-                    name=chart_symbol
-                )])
-                
-                fig.update_layout(
-                    xaxis_rangeslider_visible=False, 
-                    template="plotly_dark",          
-                    margin=dict(l=20, r=20, t=20, b=20),
-                    height=500
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-                # 收集這張圖的 JSON
-                saved_chart_jsons.append(fig.to_json())
-                
-            else:
-                st.warning(f"無法獲取 {chart_symbol} 在 {chart_period} 期間的歷史資料。")
-                
-        except Exception as e:
-            st.error(f"繪製 {chart_symbol} 時發生錯誤：{str(e)}")
-            
-    # 將所有圖表的 JSON 陣列轉成字串，一次存入資料庫
-    if saved_chart_jsons:
-        final_json_str = json.dumps(saved_chart_jsons)
-        
-        st.session_state.messages.append({
-            "role": "assistant", 
-            "content": final_text if 'final_text' in locals() else "為您繪製圖表如下：", 
-            "chart_json": final_json_str
-        })
-        save_chat_message(
-            st.session_state.current_session_id, 
-            "assistant", 
-            final_text if 'final_text' in locals() else "為您繪製圖表如下：", 
-            final_json_str
-        )
-        
-    # 畫完圖後，清空佇列歸零
-    st.session_state.render_chart_queue = []
+render_chart_queue(st.session_state.current_session_id, locals().get("final_text"))
