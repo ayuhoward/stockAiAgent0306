@@ -230,6 +230,52 @@ class InstitutionalScreeningTests(unittest.TestCase):
             any("可能漏列或估算失準" in caveat for caveat in result["caveats"])
         )
 
+    @patch("stock_tools.institutional_screening.fetch_fubon_holdings")
+    @patch("stock_tools.institutional_screening._fetch_tpex_daily_report")
+    @patch("stock_tools.institutional_screening._fetch_twse_daily_report")
+    def test_scan_skips_failed_snapshot_and_keeps_other_candidates(
+        self,
+        mock_twse,
+        mock_tpex,
+        mock_fubon,
+    ):
+        flows = {
+            symbol: {"name": symbol, "net_buy_shares": 7_000_000}
+            for symbol in ("6213", "6488")
+        }
+        mock_twse.side_effect = lambda day: flows if day == "2026-01-02" else {}
+        mock_tpex.return_value = {}
+
+        def fetch_fubon(symbol):
+            if symbol == "6213":
+                raise requests.ConnectionError("Fubon connection reset")
+            return {
+                "symbol": symbol,
+                "source": "Fubon eBroker",
+                "data_date": "01/02",
+                "unit": "張",
+                "investment_trust": {
+                    "lots": 8000,
+                    "daily_change_lots": 100,
+                    "ownership_pct": 4.2,
+                },
+                "source_url": f"https://example.test/{symbol}",
+            }
+
+        mock_fubon.side_effect = fetch_fubon
+
+        result = scan_institutional_accumulation(
+            start_date="2026-01-01",
+            end_date="2026-01-02",
+        )
+
+        self.assertEqual(result["matched_count"], 1)
+        self.assertEqual([item["symbol"] for item in result["candidates"]], ["6488"])
+        self.assertFalse(result["scan_complete"])
+        self.assertEqual(result["snapshot_failure_count"], 1)
+        self.assertEqual(result["snapshot_failures"][0]["symbol"], "6213")
+        self.assertIn("Fubon connection reset", result["snapshot_failures"][0]["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

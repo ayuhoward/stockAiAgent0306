@@ -324,12 +324,20 @@ def scan_institutional_accumulation(
         }
         for future in concurrent.futures.as_completed(future_to_symbol):
             symbol = future_to_symbol[future]
-            snapshot_results[symbol] = future.result()
+            try:
+                snapshot_results[symbol] = future.result()
+            except Exception as error:
+                snapshot_results[symbol] = {"error": str(error)}
 
     matches = []
     snapshot_failures = []
     for symbol, max_runup in candidates_to_check:
         snapshot = snapshot_results[symbol]
+        if not isinstance(snapshot, dict):
+            snapshot_failures.append(
+                {"symbol": symbol, "error": "富邦頁面回傳資料格式無效。"}
+            )
+            continue
         if "error" in snapshot:
             snapshot_failures.append(
                 {"symbol": symbol, "error": snapshot["error"]}
@@ -338,9 +346,18 @@ def scan_institutional_accumulation(
 
         try:
             snapshot_date = _snapshot_date(snapshot["data_date"], end)
-        except (KeyError, ValueError):
+            investment_trust = snapshot["investment_trust"]
+            if not isinstance(investment_trust, dict):
+                raise ValueError("投信持股欄位格式無法辨識。")
+            current_lots = int(investment_trust["lots"])
+            ownership_pct = float(investment_trust["ownership_pct"])
+            source_url = snapshot["source_url"]
+        except (AttributeError, KeyError, TypeError, ValueError) as error:
             snapshot_failures.append(
-                {"symbol": symbol, "error": "富邦頁面資料日期格式無法辨識。"}
+                {
+                    "symbol": symbol,
+                    "error": f"富邦頁面快照格式無法辨識：{error}",
+                }
             )
             continue
 
@@ -353,7 +370,6 @@ def scan_institutional_accumulation(
             )
             continue
 
-        current_lots = snapshot["investment_trust"]["lots"]
         estimates = _reconstruct_holdings(
             current_lots=current_lots,
             daily_net_shares=daily_net_shares_by_symbol.get(symbol, {}),
@@ -375,13 +391,11 @@ def scan_institutional_accumulation(
                     "near_zero_date": estimates["minimum_date"],
                     "estimated_near_zero_holding_lots": round(minimum_lots, 1),
                     "current_holding_lots": current_lots,
-                    "current_ownership_pct": snapshot["investment_trust"][
-                        "ownership_pct"
-                    ],
+                    "current_ownership_pct": ownership_pct,
                     "estimated_accumulation_lots": round(increase_lots, 1),
                     "ytd_net_buy_lots": round(estimates["ytd_net_buy_lots"], 1),
                     "snapshot_date": snapshot["data_date"],
-                    "source_url": snapshot["source_url"],
+                    "source_url": source_url,
                 }
             )
 
@@ -407,6 +421,7 @@ def scan_institutional_accumulation(
         "failed_daily_report_count": len(failures),
         "daily_report_failures": failures[:50],
         "daily_report_failure_details_truncated": len(failures) > 50,
+        "snapshot_failure_count": len(snapshot_failures),
         "snapshot_failures": snapshot_failures[:20],
         "scan_complete": (
             truncated_candidate_count == 0
@@ -432,9 +447,9 @@ def scan_institutional_accumulation(
             "富邦資料更新頻率未經確認，不保證為盤中即時。",
         ] + (
             [
-                "部分交易日的交易所日報重試後仍無法取得；候選篩選與持股反推僅使用成功取得的資料，結果可能漏列或估算失準。請查看 daily_report_failures。"
+                "部分交易日或個股快照未能取得；結果只列出成功核對的候選，可能漏列或估算失準。請查看 daily_report_failures 與 snapshot_failures。"
             ]
-            if failures
+            if failures or snapshot_failures
             else []
         ),
     }
