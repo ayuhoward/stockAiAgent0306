@@ -147,6 +147,36 @@ class FetchChipDataTests(unittest.TestCase):
             },
         )
 
+    def test_parses_trust_snapshot_when_foreign_ownership_percent_is_missing(self):
+        html = """
+        <table class="t01">
+          <tr><td>台積電(2330)籌碼流向 日期：11/03</td></tr>
+          <tr><td></td><td>最新張數</td><td>當日增減</td><td>佔股本比例</td></tr>
+          <tr><td>外資持股</td><td>17,751,127</td><td>N/A</td><td></td></tr>
+          <tr><td>投信持股</td><td>1,013,037</td><td>2,339</td><td>3.91%</td></tr>
+          <tr><td>自營商持股</td><td>394,878</td><td>N/A</td><td>1.52%</td></tr>
+        </table>
+        """
+
+        result = _parse_fubon_chip_page(html, "2330")
+
+        self.assertEqual(
+            result["positions"]["investment_trust"],
+            {
+                "lots": 1_013_037,
+                "daily_change_lots": 2339,
+                "ownership_pct": 3.91,
+            },
+        )
+        self.assertEqual(
+            result["positions"]["foreign_investor"],
+            {
+                "lots": 17_751_127,
+                "daily_change_lots": None,
+                "ownership_pct": None,
+            },
+        )
+
     @patch(
         "stock_tools.market_data._fetch_fubon_chip_data",
         return_value={

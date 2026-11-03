@@ -74,20 +74,27 @@ def _parse_fubon_chip_page(html: str, symbol: str) -> dict:
 
         values = [re.sub(r"[,\s]", "", value) for value in row[1:4]]
         if not re.fullmatch(r"\d+(?:\.\d+)?", values[0]):
-            raise ValueError(f"富邦頁面 {row[0]} 的持股數格式無法辨識。")
+            if row[0] == "投信持股":
+                raise ValueError(f"富邦頁面 {row[0]} 的持股數格式無法辨識。")
+            continue
         daily_change = (
             int(float(values[1]))
             if re.fullmatch(r"-?\d+(?:\.\d+)?", values[1])
             else None
         )
         percent = values[2].rstrip("%")
-        if not re.fullmatch(r"\d+(?:\.\d+)?", percent):
+        ownership_pct = (
+            float(percent)
+            if re.fullmatch(r"\d+(?:\.\d+)?", percent)
+            else None
+        )
+        if row[0] == "投信持股" and ownership_pct is None:
             raise ValueError(f"富邦頁面 {row[0]} 的持股比例格式無法辨識。")
 
         positions[labels[row[0]]] = {
             "lots": int(float(values[0])),
             "daily_change_lots": daily_change,
-            "ownership_pct": float(percent),
+            "ownership_pct": ownership_pct,
         }
 
     if "investment_trust" not in positions:
