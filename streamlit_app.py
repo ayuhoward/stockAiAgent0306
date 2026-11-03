@@ -14,6 +14,7 @@ from stock_tools.chat_history import (
     load_chat_history,
     load_global_memory,
     save_chat_message,
+    split_chat_history_for_context,
     update_global_memory,
 )
 from stock_tools.charts import render_chart_queue, render_saved_chart, show_stock_chart
@@ -324,15 +325,10 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                 # ==========================================
                 # 2. 固定輪數與 Token 預算截斷，超出部分摘要至全域記憶
                 # ==========================================
-                history_messages = st.session_state.messages[:-1].copy()
-                overflow_buffer = []
-
-                if len(history_messages) > MAX_HISTORY_MESSAGES:
-                    overflow_buffer = history_messages[:-MAX_HISTORY_MESSAGES]
-                    history_messages = history_messages[-MAX_HISTORY_MESSAGES:]
-
-                if history_messages and history_messages[0]["role"] == "assistant":
-                    overflow_buffer.append(history_messages.pop(0))
+                history_messages, overflow_buffer = split_chat_history_for_context(
+                    st.session_state.messages[:-1],
+                    MAX_HISTORY_MESSAGES,
+                )
 
                 global_memory_context = load_global_memory()
                 summarized_history = False

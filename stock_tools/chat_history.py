@@ -1,6 +1,17 @@
 from stock_tools.common import get_db_connection
 
 
+def split_chat_history_for_context(messages: list, max_messages: int) -> tuple[list, list]:
+    """Drop the UI-only opening greeting, then split this session's history."""
+    history = list(messages)
+    if history and history[0]["role"] == "assistant":
+        history.pop(0)
+
+    if len(history) > max_messages:
+        return history[-max_messages:], history[:-max_messages]
+    return history, []
+
+
 def initialize_chat_history_tables(cursor):
     cursor.execute(
         """
