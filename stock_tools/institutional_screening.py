@@ -1,6 +1,7 @@
 import concurrent.futures
 import datetime
 import re
+import time
 
 import requests
 import streamlit as st
@@ -16,6 +17,8 @@ _TPEX_REFERER = (
 _TPEX_TRUST_NET_BUY_INDEX = 13
 _MAX_DATE_RANGE_DAYS = 366
 _MAX_FUBON_CANDIDATE_CHECKS = 500
+_DAILY_REPORT_MAX_ATTEMPTS = 3
+_DAILY_REPORT_RETRY_DELAY_SECONDS = 0.5
 
 
 def _parse_share_count(value) -> int:
@@ -88,41 +91,58 @@ def _parse_tpex_daily_report(payload: dict, requested_date: datetime.date) -> di
     return records
 
 
+def _retry_daily_report(fetch_report):
+    for attempt in range(1, _DAILY_REPORT_MAX_ATTEMPTS + 1):
+        try:
+            return fetch_report()
+        except (requests.RequestException, ValueError):
+            if attempt == _DAILY_REPORT_MAX_ATTEMPTS:
+                raise
+            time.sleep(_DAILY_REPORT_RETRY_DELAY_SECONDS * (2 ** (attempt - 1)))
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def _fetch_twse_daily_report(date_text: str) -> dict:
-    response = requests.get(
-        _TWSE_URL,
-        params={
-            "date": date_text.replace("-", ""),
-            "selectType": "ALLBUT0999",
-            "response": "json",
-        },
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=20,
-    )
-    response.raise_for_status()
-    return _parse_twse_daily_report(response.json())
+    def fetch_report():
+        response = requests.get(
+            _TWSE_URL,
+            params={
+                "date": date_text.replace("-", ""),
+                "selectType": "ALLBUT0999",
+                "response": "json",
+            },
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=20,
+        )
+        response.raise_for_status()
+        return _parse_twse_daily_report(response.json())
+
+    return _retry_daily_report(fetch_report)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def _fetch_tpex_daily_report(date_text: str) -> dict:
     report_date = datetime.date.fromisoformat(date_text)
-    response = requests.get(
-        _TPEX_URL,
-        params={
-            "type": "Daily",
-            "sect": "AL",
-            "date": report_date.strftime("%Y/%m/%d"),
-            "response": "json",
-        },
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Referer": _TPEX_REFERER,
-        },
-        timeout=20,
-    )
-    response.raise_for_status()
-    return _parse_tpex_daily_report(response.json(), report_date)
+
+    def fetch_report():
+        response = requests.get(
+            _TPEX_URL,
+            params={
+                "type": "Daily",
+                "sect": "AL",
+                "date": report_date.strftime("%Y/%m/%d"),
+                "response": "json",
+            },
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": _TPEX_REFERER,
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        return _parse_tpex_daily_report(response.json(), report_date)
+
+    return _retry_daily_report(fetch_report)
 
 
 def _trading_weekdays(start_date: datetime.date, end_date: datetime.date):
@@ -244,7 +264,7 @@ def scan_institutional_accumulation(
     ]
     reports = {}
     failures = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         future_to_request = {
             executor.submit(
                 _fetch_twse_daily_report
@@ -259,14 +279,13 @@ def scan_institutional_accumulation(
             try:
                 reports[(market, day.isoformat())] = future.result()
             except (requests.RequestException, ValueError) as error:
-                failures.append(f"{market.upper()} {day.isoformat()}: {error}")
-
-    if failures:
-        return {
-            "error": "取得全市場法人交易資料失敗，未執行不完整掃描。",
-            "details": failures[:10],
-            "failed_request_count": len(failures),
-        }
+                failures.append(
+                    {
+                        "market": market.upper(),
+                        "date": day.isoformat(),
+                        "error": str(error),
+                    }
+                )
 
     daily_net_shares_by_symbol = {}
     stock_names = {}
@@ -283,7 +302,11 @@ def scan_institutional_accumulation(
 
     ordered_trading_dates = sorted(trading_dates)
     if not ordered_trading_dates:
-        return {"error": "指定日期區間內查無上市或上櫃交易資料。"}
+        result = {"error": "指定日期區間內查無上市或上櫃交易資料。"}
+        if failures:
+            result["failed_daily_report_count"] = len(failures)
+            result["daily_report_failures"] = failures[:50]
+        return result
 
     potential_candidates = []
     for symbol, daily_flows in daily_net_shares_by_symbol.items():
@@ -381,10 +404,14 @@ def scan_institutional_accumulation(
         "fubon_snapshots_checked": len(candidates_to_check),
         "candidate_checks_truncated": truncated_candidate_count,
         "results_truncated": truncated_result_count,
+        "failed_daily_report_count": len(failures),
+        "daily_report_failures": failures[:50],
+        "daily_report_failure_details_truncated": len(failures) > 50,
         "snapshot_failures": snapshot_failures[:20],
         "scan_complete": (
             truncated_candidate_count == 0
             and truncated_result_count == 0
+            and not failures
             and not snapshot_failures
         ),
         "matched_count": len(matches),
@@ -403,5 +430,11 @@ def scan_institutional_accumulation(
             "估算未涵蓋可能影響庫存的非交易因素；負持股估算不列為符合條件。",
             "掃描僅核對累積買超潛力最高的指定數量股票富邦頁面；若 candidate_checks_truncated 大於 0，結果不是完整名單。",
             "富邦資料更新頻率未經確認，不保證為盤中即時。",
-        ],
+        ] + (
+            [
+                "部分交易日的交易所日報重試後仍無法取得；候選篩選與持股反推僅使用成功取得的資料，結果可能漏列或估算失準。請查看 daily_report_failures。"
+            ]
+            if failures
+            else []
+        ),
     }

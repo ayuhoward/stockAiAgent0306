@@ -1,12 +1,14 @@
 import datetime
+import requests
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from stock_tools.institutional_screening import (
     _parse_tpex_daily_report,
     _parse_twse_daily_report,
     _potential_runup_lots,
     _reconstruct_holdings,
+    _retry_daily_report,
     scan_institutional_accumulation,
 )
 
@@ -64,6 +66,21 @@ class InstitutionalScreeningTests(unittest.TestCase):
         self.assertEqual(result["minimum_date"], "2026-01-01")
         self.assertEqual(result["minimum_lots"], 1000)
         self.assertEqual(result["estimated_accumulation_lots"], 8000)
+
+    def test_retries_a_transient_daily_report_failure(self):
+        fetch_report = Mock(
+            side_effect=[
+                requests.ConnectionError("connection reset"),
+                {"6213": {"name": "聯茂", "net_buy_shares": 7_000_000}},
+            ]
+        )
+
+        with patch("stock_tools.institutional_screening.time.sleep") as mock_sleep:
+            result = _retry_daily_report(fetch_report)
+
+        self.assertIn("6213", result)
+        self.assertEqual(fetch_report.call_count, 2)
+        mock_sleep.assert_called_once_with(0.5)
 
     @patch("stock_tools.institutional_screening.fetch_fubon_holdings")
     @patch("stock_tools.institutional_screening._fetch_tpex_daily_report")
@@ -157,6 +174,61 @@ class InstitutionalScreeningTests(unittest.TestCase):
         self.assertEqual(result["results_truncated"], 1)
         self.assertFalse(result["scan_complete"])
         self.assertEqual(len(result["candidates"]), 1)
+
+    @patch("stock_tools.institutional_screening.fetch_fubon_holdings")
+    @patch("stock_tools.institutional_screening._fetch_tpex_daily_report")
+    @patch("stock_tools.institutional_screening._fetch_twse_daily_report")
+    def test_scan_returns_partial_results_with_failed_report_details(
+        self,
+        mock_twse,
+        mock_tpex,
+        mock_fubon,
+    ):
+        def fetch_twse(day):
+            if day == "2026-01-02":
+                raise requests.ConnectionError("connection reset")
+            return {}
+
+        mock_twse.side_effect = fetch_twse
+        mock_tpex.side_effect = lambda day: (
+            {
+                "6213": {
+                    "name": "聯茂",
+                    "net_buy_shares": 7_000_000,
+                }
+            }
+            if day == "2026-01-05"
+            else {}
+        )
+        mock_fubon.return_value = {
+            "symbol": "6213",
+            "source": "Fubon eBroker",
+            "data_date": "01/05",
+            "unit": "張",
+            "investment_trust": {
+                "lots": 8000,
+                "daily_change_lots": 100,
+                "ownership_pct": 4.2,
+            },
+            "source_url": "https://example.test/6213",
+        }
+
+        result = scan_institutional_accumulation(
+            start_date="2026-01-02",
+            end_date="2026-01-05",
+        )
+
+        self.assertNotIn("error", result)
+        self.assertFalse(result["scan_complete"])
+        self.assertEqual(result["failed_daily_report_count"], 1)
+        self.assertEqual(
+            result["daily_report_failures"][0]["date"],
+            "2026-01-02",
+        )
+        self.assertEqual(result["candidates"][0]["symbol"], "6213")
+        self.assertTrue(
+            any("可能漏列或估算失準" in caveat for caveat in result["caveats"])
+        )
 
 
 if __name__ == "__main__":
