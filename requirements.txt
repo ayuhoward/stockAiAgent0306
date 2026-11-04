@@ -7,9 +7,9 @@ vectorbt
 psycopg2-binary
 streamlit
 google-genai
-plotly<6.0.0
+plotly<8.0.0
 supabase
 plotly
 youtube-transcript-api
-yt-dlp>=2024.10.0
+yt-dlp>=2026.10.26
 openai
