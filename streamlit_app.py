@@ -26,7 +26,7 @@ from stock_tools.market_data import (
     fetch_stock_data,
     fetch_stock_news,
 )
-from stock_tools.portfolio import get_portfolio_summary, record_trade
+from stock_tools.portfolio import get_portfolio_summary, get_positions, record_trade
 from stock_tools.strategies import run_backtest, scan_market_opportunities
 from stock_tools.youtube_tools import fetch_youtube_transcript
 
@@ -237,6 +237,25 @@ if "total_output_tokens" not in st.session_state:
 
 # === 側邊欄：Session 管理與檔案上傳 ===
 with st.sidebar:
+    st.header("📈 我的持股")
+    try:
+        positions = get_positions()
+        if positions:
+            total_cost = 0.0
+            for symbol, shares, avg_cost in positions:
+                position_cost = shares * avg_cost
+                total_cost += position_cost
+                st.markdown(f"**{symbol}** · {shares:,.4g} 股")
+                st.caption(
+                    f"均價 ${avg_cost:,.2f} · 持倉成本 ${position_cost:,.2f}"
+                )
+            st.metric("持倉總成本", f"${total_cost:,.2f}")
+        else:
+            st.caption("目前沒有持股紀錄。")
+    except Exception as error:
+        st.error(f"無法載入持股資料：{error}")
+
+    st.divider()
     st.header("💬 對話紀錄")
     if st.button("➕ 建立新對話", use_container_width=True):
         st.session_state.current_session_id = str(uuid.uuid4())

@@ -5,6 +5,22 @@ import yfinance as yf
 from stock_tools.common import get_db_connection, normalize_symbol
 
 
+def get_positions() -> list[tuple[str, float, float]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT symbol, shares, avg_cost FROM positions ORDER BY symbol"
+        )
+        return [
+            (symbol, float(shares), float(avg_cost))
+            for symbol, shares, avg_cost in cursor.fetchall()
+        ]
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def record_trade(symbol: str, action: str, shares: float, price: float, notes: str = "") -> dict:
     # Require an explicit trade price to avoid recording a guessed price.
     clean_symbol = normalize_symbol(symbol)

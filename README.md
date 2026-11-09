@@ -32,6 +32,6 @@ $ curl -LsSf https://astral.sh/uv/install.sh | sh
 - `stock_tools/youtube_tools.py` retrieves YouTube transcripts using subtitles or Whisper.
 - `stock_tools/market_data.py` provides stock price, Fubon eBroker institutional-holdings snapshots, FinMind daily institutional buy/sell data, and news. Holdings queries use the dedicated `fetch_fubon_holdings` tool; the Fubon page's update frequency is unverified, and FinMind reports daily trading flow, not holdings.
 - `stock_tools/institutional_screening.py` scans TWSE/TPEx daily investment-trust flows and uses current Fubon holdings to estimate historical accumulation from a near-zero position. It retries transient report failures and identifies any remaining gaps in partial results. Reconstructed holdings are estimates, not historical snapshots.
-- `stock_tools/portfolio.py` records trades and summarizes holdings.
+- `stock_tools/portfolio.py` records trades and summarizes holdings; the Streamlit sidebar shows positions, share counts, average costs, and total cost basis from the database.
 - `stock_tools/strategies.py` scans markets and runs strategy backtests.
 - `stock_tools/common.py` contains shared database and symbol helpers.
