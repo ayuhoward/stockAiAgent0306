@@ -26,7 +26,11 @@ from stock_tools.market_data import (
     fetch_stock_data,
     fetch_stock_news,
 )
-from stock_tools.portfolio import get_portfolio_summary, get_positions, record_trade
+from stock_tools.portfolio import (
+    get_portfolio_summary,
+    get_positions,
+    record_trade as save_trade,
+)
 from stock_tools.strategies import run_backtest, scan_market_opportunities
 from stock_tools.youtube_tools import fetch_youtube_transcript
 
@@ -78,6 +82,15 @@ init_db()
 # Gemini 格式轉換與自動摘要工具
 # ---------------------------------------------------------
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
+
+
+def record_trade(symbol: str, action: str, shares: float, price: float, notes: str = "") -> dict:
+    result = save_trade(symbol, action, shares, price, notes)
+    if result.get("status") == "success":
+        st.session_state["portfolio_changed"] = True
+    return result
+
+
 AI_TOOL_FUNCTIONS = [
     record_trade,
     get_portfolio_summary,
@@ -320,7 +333,7 @@ for msg in st.session_state.messages:
 
 # === 處理新訊息 ===
 if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線圖，或買入 2481 強茂 1000股)"):
-   
+    st.session_state["portfolio_changed"] = False
     st.session_state.messages.append({"role": "user", "content": prompt})
     save_chat_message(st.session_state.current_session_id, "user", prompt)
     with st.chat_message("user"): st.markdown(prompt)
@@ -414,3 +427,6 @@ if prompt := st.chat_input("請輸入指令 (例如: 幫我分析這張技術線
                         pass
 
 render_chart_queue(st.session_state.current_session_id, locals().get("final_text"))
+
+if st.session_state.pop("portfolio_changed", False):
+    st.rerun()
