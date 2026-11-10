@@ -31,6 +31,7 @@ from stock_tools.portfolio import (
     get_positions,
     record_trade as save_trade,
 )
+from stock_tools.stock_names import get_stock_names
 from stock_tools.strategies import run_backtest, scan_market_opportunities
 from stock_tools.youtube_tools import fetch_youtube_transcript
 
@@ -254,15 +255,23 @@ with st.sidebar:
     try:
         positions = get_positions()
         if positions:
+            stock_names, name_errors = get_stock_names(
+                [symbol for symbol, _, _ in positions]
+            )
             total_cost = 0.0
             for symbol, shares, avg_cost in positions:
                 position_cost = shares * avg_cost
                 total_cost += position_cost
-                st.markdown(f"**{symbol}** · {shares:,.4g} 股")
+                code = symbol.removesuffix(".TW").removesuffix(".TWO")
+                name = stock_names.get(code)
+                display_name = f"（{name}）" if name else ""
+                st.markdown(f"**{symbol} {display_name}** · {shares:,.4g} 股")
                 st.caption(
                     f"均價 ${avg_cost:,.2f} · 持倉成本 ${position_cost:,.2f}"
                 )
             st.metric("持倉總成本", f"${total_cost:,.2f}")
+            if name_errors:
+                st.warning("部分股票中文名稱載入失敗，已改為顯示股票代號。")
         else:
             st.caption("目前沒有持股紀錄。")
     except Exception as error:
