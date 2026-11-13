@@ -5,8 +5,13 @@ import urllib.parse
 
 import streamlit as st
 import yt_dlp
-from openai import OpenAI
 from youtube_transcript_api import YouTubeTranscriptApi
+
+
+def _create_openai_client():
+    from openai import OpenAI
+
+    return OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 
 def fetch_youtube_transcript(url: str) -> dict:
@@ -14,32 +19,41 @@ def fetch_youtube_transcript(url: str) -> dict:
     獲取 YouTube 影片字幕。
     具備 CC 字幕秒抓機制，與超過 24MB 大檔案音軌自動切割 (ffmpeg) 轉 Whisper API 的雙層備援防呆。
     """
+    parsed_url = urllib.parse.urlparse(url)
+    hostname = parsed_url.hostname or ""
     video_id = None
-    if "v=" in url:
-        video_id = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("v", [None])[0]
-    elif "youtu.be/" in url:
-        video_id = url.split("youtu.be/")[1].split("?")[0]
+    if hostname == "youtu.be":
+        video_id = parsed_url.path.strip("/").split("/")[0]
+    elif hostname in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
+        if parsed_url.path == "/watch":
+            video_id = urllib.parse.parse_qs(parsed_url.query).get("v", [None])[0]
+        else:
+            path_parts = parsed_url.path.strip("/").split("/")
+            if len(path_parts) == 2 and path_parts[0] in {"shorts", "embed", "live"}:
+                video_id = path_parts[1]
 
     if not video_id:
         return {"error": "無法解析 YouTube 影片 ID，請確認網址格式。"}
 
     try:
-        transcript = YouTubeTranscriptApi.get_transcript(
+        transcript = YouTubeTranscriptApi().fetch(
             video_id,
             languages=["zh-TW", "zh-Hant", "zh-Hans", "zh-CN", "en"],
         )
-        full_text = " ".join([t["text"] for t in transcript])
+        full_text = " ".join(snippet.text for snippet in transcript)
+        if not full_text.strip():
+            raise ValueError("字幕內容為空。")
         return {
             "status": "success",
             "method": "cc_subtitle",
             "message": "成功取得官方 CC 字幕",
             "transcript_summary": full_text,
         }
-    except Exception:
-        pass
+    except Exception as transcript_error:
+        transcript_error_message = str(transcript_error) or type(transcript_error).__name__
 
     try:
-        openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+        openai_client = _create_openai_client()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             audio_path = os.path.join(tmpdir, "audio.m4a")
@@ -102,6 +116,13 @@ def fetch_youtube_transcript(url: str) -> dict:
                 "method": "whisper_api_split" if file_size > max_size else "whisper_api",
                 "message": "成功透過 Whisper 取回完整逐字稿",
                 "transcript_summary": full_transcript.strip(),
+                "subtitle_error": transcript_error_message,
             }
     except Exception as e:
-        return {"error": f"無法獲取字幕且音軌辨識失敗: {str(e)}"}
+        audio_error_message = str(e) or type(e).__name__
+        return {
+            "error": (
+                f"字幕擷取失敗：{transcript_error_message}；"
+                f"音軌下載或辨識也失敗：{audio_error_message}"
+            )
+        }
